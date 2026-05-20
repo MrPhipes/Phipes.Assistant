@@ -1,5 +1,7 @@
 # Phipes.Assistant
 
+[![CI](https://github.com/MrPhipes/Phipes.Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/MrPhipes/Phipes.Assistant/actions/workflows/ci.yml)
+
 Infraestructura para un **asistente personal autónomo** que opera como una persona dentro
 de Microsoft 365 (Teams + Mail) y se ayuda de Claude Code corriendo en modo headless
 para razonar y responder. Pensado para una casa/oficina pequeña con un Windows Server
@@ -652,6 +654,32 @@ Cosas no obvias que cuestan al implementar:
 | `MSDTC has cancelled` o errores raros de MSSQL                | Faltan DLLs nativas de SqlClient — copiar recursivamente `publish/runtimes/win-x64/native/`.  |
 | `claude.exe Error: Input must be provided`                    | Modo headless detectó que no hay TTY. No usar `--remote-control` en scheduled task.           |
 | Sarah dice "no tengo acceso al mailbox"                       | El `--append-system-prompt` no mencionaba skills, o el settings.json no permite `PowerShell`. |
+
+---
+
+## Tests
+
+Suite xUnit en `tests/Phipes.Assistant.WebhookHandler.Tests/`. Cubre los componentes
+sensibles a seguridad:
+
+- **`NotificationDecrypterTests`** — genera un cert RSA-2048 self-signed en memoria,
+  construye payloads cifrados siguiendo el spec de Microsoft Graph (AES-256-CBC +
+  HMAC-SHA256 + RSA-OAEP-SHA1) y verifica roundtrip, detección de tampering vía HMAC,
+  rechazo de thumbprint incorrecto y payload grande (>10 KB).
+- **`JwtNotificationValidatorTests`** — inyecta un `HttpMessageHandler` stub que devuelve
+  un JWKS controlado para validar: tokens vacíos, no parseables, sin `kid`/`tid`, con
+  `tid` distinto al esperado, con firma de otra key, con `audience` incorrecto, vencidos,
+  y un caso de happy path con firma válida.
+
+Para ejecutarlos localmente:
+
+```powershell
+dotnet test Phipes.Assistant.sln --configuration Release
+```
+
+Los tests corren automáticamente en GitHub Actions (`.github/workflows/ci.yml`) en cada
+`push`/PR a `main` sobre `windows-latest` (el `NotificationDecrypter` usa
+`X509KeyStorageFlags.MachineKeySet`, comportamiento solo soportado en Windows).
 
 ---
 
