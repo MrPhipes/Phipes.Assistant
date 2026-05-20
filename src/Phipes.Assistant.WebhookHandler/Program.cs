@@ -101,6 +101,13 @@ builder.Services.AddHttpClient<ILifecycleHandler, LifecycleHandler>(c =>
     c.Timeout = TimeSpan.FromSeconds(15);
 });
 
+// HttpClient dedicado para descargar adjuntos de Teams (hosted images + OneDrive references).
+// Timeout mas grande porque puede ser un PDF de varios MB.
+builder.Services.AddHttpClient<IMessageAttachmentExtractor, MessageAttachmentExtractor>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(60);
+});
+
 // AlertManager: singleton porque mantiene contadores rolling-window y last-alert state
 // en memoria. Usa IHttpClientFactory (named "alerts") y IServiceScopeFactory para
 // resolver el IGraphTokenProvider sin captar un scope vivo.

@@ -16,6 +16,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
     private readonly INotificationDecrypter _decrypter;
     private readonly IClaudeCodeInvoker _claude;
     private readonly IAlertManager _alerts;
+    private readonly IMessageAttachmentExtractor _attachmentExtractor;
     private readonly ILogger<TeamsNotificationHandler> _logger;
 
     private string? _myUserId;
@@ -27,6 +28,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         INotificationDecrypter decrypter,
         IClaudeCodeInvoker claude,
         IAlertManager alerts,
+        IMessageAttachmentExtractor attachmentExtractor,
         ILogger<TeamsNotificationHandler> logger)
     {
         _http = http;
@@ -34,6 +36,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         _decrypter = decrypter;
         _claude = claude;
         _alerts = alerts;
+        _attachmentExtractor = attachmentExtractor;
         _logger = logger;
     }
 
@@ -115,17 +118,64 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
             return;
         }
 
-        var reply = await BuildResponseAsync(chatId, message, cancellationToken);
-        FileLog($"REPLY READY to chat={chatId}, sender={message.From?.User?.DisplayName} ({senderId})");
+        // Descargar adjuntos (hosted images + OneDrive references) ANTES de invocar Claude.
+        // Quedan en C:\inetpub\pacificdev.assistant\attachments\{messageId}\, accesibles para
+        // que Claude los lea via la tool Read durante su razonamiento.
+        IReadOnlyList<ExtractedAttachment> attachments = Array.Empty<ExtractedAttachment>();
+        if ((message.Attachments is { Count: > 0 }) ||
+            (message.Body?.Content?.Contains("hostedContents", StringComparison.OrdinalIgnoreCase) == true))
+        {
+            try
+            {
+                attachments = await _attachmentExtractor.ExtractAsync(
+                    chatId, message.Id ?? "unknown",
+                    message.Body?.Content ?? "",
+                    message.Attachments,
+                    accessToken,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                FileLog($"ATTACHMENT EXTRACT FAIL chat={chatId}: {ex.Message}");
+            }
+        }
+
         try
         {
-            await SendChatReplyAsync(chatId, reply, accessToken, cancellationToken);
-            FileLog($"REPLY SENT to chat={chatId}");
+            var reply = await BuildResponseAsync(chatId, message, attachments, cancellationToken);
+            FileLog($"REPLY READY to chat={chatId}, sender={message.From?.User?.DisplayName} ({senderId})");
+            try
+            {
+                await SendChatReplyAsync(chatId, reply, accessToken, cancellationToken);
+                FileLog($"REPLY SENT to chat={chatId}");
+            }
+            catch (Exception ex)
+            {
+                FileLog($"REPLY SEND FAIL chat={chatId}: {ex}");
+                throw;
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            FileLog($"REPLY SEND FAIL chat={chatId}: {ex}");
-            throw;
+            // Limpiar archivos descargados (no se guardan permanentemente). Si la respuesta
+            // fallo, igual borramos: Claude ya tuvo su oportunidad de leerlos.
+            CleanupAttachments(attachments);
+        }
+    }
+
+    private static void CleanupAttachments(IReadOnlyList<ExtractedAttachment> attachments)
+    {
+        if (attachments.Count == 0) return;
+        var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in attachments)
+        {
+            try { File.Delete(a.FilePath); } catch { }
+            var d = Path.GetDirectoryName(a.FilePath);
+            if (!string.IsNullOrEmpty(d)) dirs.Add(d);
+        }
+        foreach (var d in dirs)
+        {
+            try { Directory.Delete(d, recursive: true); } catch { }
         }
     }
 
@@ -133,7 +183,11 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
 
     // Genera la respuesta delegando a Claude Code en modo --print (Sarah hosted).
     // Fallback al canned reply si claude falla, para nunca dejar al interlocutor sin respuesta.
-    private async Task<string> BuildResponseAsync(string chatId, GraphChatMessage incoming, CancellationToken cancellationToken)
+    private async Task<string> BuildResponseAsync(
+        string chatId,
+        GraphChatMessage incoming,
+        IReadOnlyList<ExtractedAttachment> attachments,
+        CancellationToken cancellationToken)
     {
         var sender = incoming.From?.User?.DisplayName ?? "usted";
         var senderId = incoming.From?.User?.Id;
@@ -142,11 +196,25 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         var cleanBody = System.Text.RegularExpressions.Regex.Replace(rawBody, "<[^>]+>", " ");
         cleanBody = System.Net.WebUtility.HtmlDecode(cleanBody).Trim();
 
+        var attachmentSection = "";
+        if (attachments.Count > 0)
+        {
+            var lines = attachments.Select(a =>
+                $"  - {a.FilePath}   ({a.OriginalName}, {a.ContentType}, {a.SizeBytes} bytes)");
+            attachmentSection =
+                "\n\nADJUNTOS recibidos con este mensaje (LEALOS con su tool Read antes de responder):\n" +
+                string.Join("\n", lines) +
+                "\n\nLos archivos son temporales — se borraran en cuanto termine este turno, " +
+                "asi que LEALOS AHORA si los necesita para responder. Imagenes (.jpg/.png/.gif/.webp) " +
+                "puede leerlas directamente como imagen; PDFs / documentos / texto via Read normal.";
+        }
+
         var prompt = $"Acabas de recibir este mensaje en un chat de Microsoft Teams.\n" +
                      $"Remitente: {sender}" + (senderId is null ? "" : $" (id={senderId})") + "\n" +
                      $"chatId: {chatId}\n\n" +
-                     $"Mensaje:\n{cleanBody}\n\n" +
-                     $"Responde directamente como Sarah Connor en una o dos frases concisas. " +
+                     $"Mensaje:\n{cleanBody}" +
+                     attachmentSection +
+                     $"\n\nResponde directamente como Sarah Connor en una o dos frases concisas. " +
                      $"Tu respuesta sera posteada literalmente al chat - no incluyas saludos largos, " +
                      $"firmas, ni marcadores tipo \"Sarah:\".";
 
@@ -225,8 +293,10 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
     private sealed class GraphChatMessage
     {
         [JsonPropertyName("id")] public string? Id { get; set; }
+        [JsonPropertyName("chatId")] public string? ChatId { get; set; }
         [JsonPropertyName("from")] public GraphFrom? From { get; set; }
         [JsonPropertyName("body")] public GraphBody? Body { get; set; }
+        [JsonPropertyName("attachments")] public List<GraphAttachmentRef>? Attachments { get; set; }
     }
     private sealed class GraphFrom
     {
