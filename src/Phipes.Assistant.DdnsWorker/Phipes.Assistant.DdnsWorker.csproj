@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <!-- net10.0-windows porque dependemos de DPAPI (System.Security.Cryptography.ProtectedData)
+         y del subsistema de Windows Service. Esto silencia CA1416 sin renunciar a la portabilidad
+         de la lógica de negocio (la lógica DDNS sí es cross-platform; solo el almacenamiento de
+         tokens vía DPAPI es Windows-only). -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>phipes-assistant-ddnsworker</UserSecretsId>
+    <RootNamespace>Phipes.Assistant.DdnsWorker</RootNamespace>
+    <AssemblyName>Phipes.Assistant.DdnsWorker</AssemblyName>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.0.0" />
+    <!-- DataAnnotations habilita .ValidateDataAnnotations() en OptionsBuilder. -->
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.0" />
+    <!-- UserSecrets habilita AddUserSecrets<Program>() también fuera de Development. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

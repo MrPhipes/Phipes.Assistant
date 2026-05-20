@@ -1,0 +1,41 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.vs/
+.vs/
+*.pdb
+
+# Visual Studio publish profiles (contain server hostnames, IPs, usernames)
+Properties/PublishProfiles/
+*.pubxml
+*.pubxml.user
+
+# Rider / VS
+.idea/
+
+# Secrets (NEVER commit)
+# Los secretos viven fuera del repo (User Secrets, en %APPDATA%\Microsoft\UserSecrets\<id>\secrets.json
+# para Windows o ~/.microsoft/usersecrets/<id>/secrets.json en Linux/macOS).
+# Igual ignoramos archivos *.Local / *.Production / .env aunque no deberían existir en el repo.
+appsettings.Production.json
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+*.token.xml
+*.cred.xml
+*.dpapi
+.secrets/
+secrets/
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
