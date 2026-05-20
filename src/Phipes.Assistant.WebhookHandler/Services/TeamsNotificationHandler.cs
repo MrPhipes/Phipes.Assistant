@@ -15,6 +15,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
     private readonly IGraphTokenProvider _tokens;
     private readonly INotificationDecrypter _decrypter;
     private readonly IClaudeCodeInvoker _claude;
+    private readonly IAlertManager _alerts;
     private readonly ILogger<TeamsNotificationHandler> _logger;
 
     private string? _myUserId;
@@ -25,12 +26,14 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         IGraphTokenProvider tokens,
         INotificationDecrypter decrypter,
         IClaudeCodeInvoker claude,
+        IAlertManager alerts,
         ILogger<TeamsNotificationHandler> logger)
     {
         _http = http;
         _tokens = tokens;
         _decrypter = decrypter;
         _claude = claude;
+        _alerts = alerts;
         _logger = logger;
     }
 
@@ -58,6 +61,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         catch (Exception ex)
         {
             FileLog($"DECRYPT FAIL: {ex}");
+            _alerts.Record(AlertCategory.DecryptFailures, $"teams sub={notification.SubscriptionId}: {ex.Message}");
             throw;
         }
 

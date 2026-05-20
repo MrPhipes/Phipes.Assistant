@@ -23,6 +23,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
     private readonly IGraphTokenProvider _tokens;
     private readonly INotificationDecrypter _decrypter;
     private readonly IClaudeCodeInvoker _claude;
+    private readonly IAlertManager _alerts;
     private readonly GraphOptions _graphOptions;
     private readonly ILogger<MailNotificationHandler> _logger;
 
@@ -38,6 +39,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         IGraphTokenProvider tokens,
         INotificationDecrypter decrypter,
         IClaudeCodeInvoker claude,
+        IAlertManager alerts,
         IOptions<GraphOptions> graphOptions,
         ILogger<MailNotificationHandler> logger)
     {
@@ -45,6 +47,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         _tokens = tokens;
         _decrypter = decrypter;
         _claude = claude;
+        _alerts = alerts;
         _graphOptions = graphOptions.Value;
         _logger = logger;
     }
@@ -73,6 +76,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         catch (Exception ex)
         {
             FileLog($"DECRYPT FAIL: {ex}");
+            _alerts.Record(AlertCategory.DecryptFailures, $"mail sub={notification.SubscriptionId}: {ex.Message}");
             throw;
         }
 

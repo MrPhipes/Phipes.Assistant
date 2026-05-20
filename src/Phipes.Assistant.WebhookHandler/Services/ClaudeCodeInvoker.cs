@@ -21,12 +21,14 @@ public interface IClaudeCodeInvoker
 public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 {
     private readonly ClaudeOptions _options;
+    private readonly IAlertManager _alerts;
     private readonly ILogger<ClaudeCodeInvoker> _logger;
     private readonly Lazy<string> _oauthToken;
 
-    public ClaudeCodeInvoker(IOptions<ClaudeOptions> options, ILogger<ClaudeCodeInvoker> logger)
+    public ClaudeCodeInvoker(IOptions<ClaudeOptions> options, IAlertManager alerts, ILogger<ClaudeCodeInvoker> logger)
     {
         _options = options.Value;
+        _alerts = alerts;
         _logger = logger;
         _oauthToken = new Lazy<string>(() => PsCredentialReader.ReadPassword(_options.OAuthTokenPath));
     }
@@ -109,6 +111,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         {
             try { if (!process.HasExited) process.Kill(true); } catch { }
             FileLog($"TIMEOUT chat={chatId} despues de {_options.TimeoutSeconds}s");
+            _alerts.Record(AlertCategory.ClaudeTimeouts, $"chat={chatId} timeout={_options.TimeoutSeconds}s");
             throw new TimeoutException($"claude.exe excedio timeout de {_options.TimeoutSeconds}s");
         }
         sw.Stop();
@@ -133,6 +136,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         if (parsed is null || parsed.IsError || string.IsNullOrWhiteSpace(parsed.Result))
         {
             FileLog($"CLAUDE ERROR is_error={parsed?.IsError} apiErr={parsed?.ApiErrorStatus} resultLen={parsed?.Result?.Length}");
+            _alerts.Record(AlertCategory.ClaudeApiErrors, $"chat={chatId} apiErr={parsed?.ApiErrorStatus ?? "n/a"}");
             throw new InvalidOperationException($"claude.exe reporto error: {parsed?.ApiErrorStatus ?? "(sin detalle)"}");
         }
 

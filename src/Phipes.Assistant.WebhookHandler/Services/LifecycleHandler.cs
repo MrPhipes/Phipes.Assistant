@@ -17,13 +17,20 @@ public interface ILifecycleHandler
 public sealed class LifecycleHandler : ILifecycleHandler
 {
     private readonly HttpClient _http;
-    private readonly IGraphTokenProvider _tokens;
+    private readonly IWebhookAppTokenProvider _tokens;
+    private readonly IAlertManager _alerts;
     private readonly ILogger<LifecycleHandler> _logger;
 
-    public LifecycleHandler(HttpClient http, IGraphTokenProvider tokens, ILogger<LifecycleHandler> logger)
+    // OJO: usamos IWebhookAppTokenProvider (no IGraphTokenProvider). Las subscriptions
+    // con includeResourceData=true solo son administrables por la app que las creo
+    // (el "applicationId" de la subscription). Como las creo la "Webhook app" dedicada,
+    // PATCHearlas con sconnor delegated da 404 ExtensionError. Mismo token-provider que
+    // usa SubscriptionRenewer.
+    public LifecycleHandler(HttpClient http, IWebhookAppTokenProvider tokens, IAlertManager alerts, ILogger<LifecycleHandler> logger)
     {
         _http = http;
         _tokens = tokens;
+        _alerts = alerts;
         _logger = logger;
     }
 
@@ -74,6 +81,8 @@ public sealed class LifecycleHandler : ILifecycleHandler
         else
         {
             FileLog($"RENEW FAIL sub={subscriptionId}: HTTP {(int)resp.StatusCode} {body}");
+            _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+                $"lifecycle sub={subscriptionId} HTTP {(int)resp.StatusCode}");
             resp.EnsureSuccessStatusCode();
         }
     }

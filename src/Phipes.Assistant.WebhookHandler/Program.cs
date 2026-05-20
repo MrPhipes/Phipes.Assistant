@@ -47,6 +47,11 @@ builder.Services.AddOptions<IdempotencyOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<MonitoringOptions>()
+    .Bind(builder.Configuration.GetSection(MonitoringOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
@@ -95,6 +100,12 @@ builder.Services.AddHttpClient<ILifecycleHandler, LifecycleHandler>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(15);
 });
+
+// AlertManager: singleton porque mantiene contadores rolling-window y last-alert state
+// en memoria. Usa IHttpClientFactory (named "alerts") y IServiceScopeFactory para
+// resolver el IGraphTokenProvider sin captar un scope vivo.
+builder.Services.AddHttpClient("alerts", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<IAlertManager, AlertManager>();
 
 var app = builder.Build();
 
@@ -175,8 +186,10 @@ app.MapPost("/webhook/teams", async (
         var jwtResult = await jwtValidator.ValidateTokensAsync(payload.ValidationTokens ?? new List<string>());
         if (!jwtResult.IsValid)
         {
-            FileLog($"[Jwt] INVALID validationTokens: {jwtResult.FailureReason} (shadowMode={(securityOpts.RejectInvalidJwts ? "REJECT" : "LOG-ONLY")})");
+            Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Jwt", $"INVALID validationTokens: {jwtResult.FailureReason} (shadowMode={(securityOpts.RejectInvalidJwts ? "REJECT" : "LOG-ONLY")})");
             log.LogWarning("validationTokens invalidos: {Reason}", jwtResult.FailureReason);
+            scopeJwt.ServiceProvider.GetRequiredService<IAlertManager>()
+                .Record(AlertCategory.JwtInvalid, jwtResult.FailureReason);
             if (securityOpts.RejectInvalidJwts)
             {
                 return Results.Unauthorized();
@@ -184,7 +197,7 @@ app.MapPost("/webhook/teams", async (
         }
         else
         {
-            FileLog($"[Jwt] OK validationTokens validados ({(payload.ValidationTokens?.Count ?? 0)} tokens)");
+            Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Jwt", $"OK validationTokens validados ({(payload.ValidationTokens?.Count ?? 0)} tokens)");
         }
     }
 
@@ -292,12 +305,14 @@ app.MapPost("/webhook/teams/lifecycle", async (
         var jwtResult = await jwtValidator.ValidateTokensAsync(payload.ValidationTokens ?? new List<string>());
         if (!jwtResult.IsValid)
         {
-            FileLog($"[Jwt-Lifecycle] INVALID: {jwtResult.FailureReason} (shadow={(securityOpts.RejectInvalidJwts ? "REJECT" : "LOG-ONLY")})");
+            Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Jwt-Lifecycle", $"INVALID: {jwtResult.FailureReason} (shadow={(securityOpts.RejectInvalidJwts ? "REJECT" : "LOG-ONLY")})");
+            scopeJwt.ServiceProvider.GetRequiredService<IAlertManager>()
+                .Record(AlertCategory.JwtInvalid, $"lifecycle: {jwtResult.FailureReason}");
             if (securityOpts.RejectInvalidJwts) { return Results.Unauthorized(); }
         }
         else
         {
-            FileLog($"[Jwt-Lifecycle] OK ({(payload.ValidationTokens?.Count ?? 0)} tokens)");
+            Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Jwt-Lifecycle", $"OK ({(payload.ValidationTokens?.Count ?? 0)} tokens)");
         }
     }
 

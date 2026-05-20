@@ -17,15 +17,18 @@ public sealed class SubscriptionRenewer : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly RenewerOptions _options;
+    private readonly IAlertManager _alerts;
     private readonly ILogger<SubscriptionRenewer> _logger;
 
     public SubscriptionRenewer(
         IServiceScopeFactory scopeFactory,
         IOptions<RenewerOptions> options,
+        IAlertManager alerts,
         ILogger<SubscriptionRenewer> logger)
     {
         _scopeFactory = scopeFactory;
         _options = options.Value;
+        _alerts = alerts;
         _logger = logger;
     }
 
@@ -121,6 +124,8 @@ public sealed class SubscriptionRenewer : BackgroundService
         else
         {
             FileLog($"PATCH FAIL sub={subscriptionId}: HTTP {(int)patchResp.StatusCode} {Truncate(patchBody, 300)}");
+            _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+                $"sub={subscriptionId} HTTP {(int)patchResp.StatusCode}");
         }
     }
 
