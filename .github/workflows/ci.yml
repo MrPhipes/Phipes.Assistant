@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: Build & Test (Windows)
+    # net10.0-windows requiere runner Windows (los tests del NotificationDecrypter usan
+    # X509CertificateLoader.LoadPkcs12FromFile con MachineKeySet, comportamiento Windows-only).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Restore
+        run: dotnet restore Phipes.Assistant.sln
+
+      - name: Build
+        run: dotnet build Phipes.Assistant.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test Phipes.Assistant.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: '**/TestResults/**'
+          retention-days: 14
