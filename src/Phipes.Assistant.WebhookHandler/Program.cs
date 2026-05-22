@@ -101,6 +101,12 @@ builder.Services.AddHttpClient<ILifecycleHandler, LifecycleHandler>(c =>
     c.Timeout = TimeSpan.FromSeconds(15);
 });
 
+// HttpClient dedicado para SubscriptionRecreator (POST /subscriptions con encryption cert).
+builder.Services.AddHttpClient<ISubscriptionRecreator, SubscriptionRecreator>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+
 // HttpClient dedicado para descargar adjuntos de Teams (hosted images + OneDrive references).
 // Timeout mas grande porque puede ser un PDF de varios MB.
 builder.Services.AddHttpClient<IMessageAttachmentExtractor, MessageAttachmentExtractor>(c =>

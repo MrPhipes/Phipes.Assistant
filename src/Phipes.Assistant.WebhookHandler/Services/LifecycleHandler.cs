@@ -1,5 +1,7 @@
 ﻿using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using Microsoft.Extensions.Options;
+using Phipes.Assistant.WebhookHandler.Configuration;
 using Phipes.Assistant.WebhookHandler.Models;
 
 namespace Phipes.Assistant.WebhookHandler.Services;
@@ -19,6 +21,8 @@ public sealed class LifecycleHandler : ILifecycleHandler
     private readonly HttpClient _http;
     private readonly IWebhookAppTokenProvider _tokens;
     private readonly IAlertManager _alerts;
+    private readonly ISubscriptionRecreator _recreator;
+    private readonly RenewerOptions _renewerOptions;
     private readonly ILogger<LifecycleHandler> _logger;
 
     // OJO: usamos IWebhookAppTokenProvider (no IGraphTokenProvider). Las subscriptions
@@ -26,11 +30,19 @@ public sealed class LifecycleHandler : ILifecycleHandler
     // (el "applicationId" de la subscription). Como las creo la "Webhook app" dedicada,
     // PATCHearlas con sconnor delegated da 404 ExtensionError. Mismo token-provider que
     // usa SubscriptionRenewer.
-    public LifecycleHandler(HttpClient http, IWebhookAppTokenProvider tokens, IAlertManager alerts, ILogger<LifecycleHandler> logger)
+    public LifecycleHandler(
+        HttpClient http,
+        IWebhookAppTokenProvider tokens,
+        IAlertManager alerts,
+        ISubscriptionRecreator recreator,
+        IOptions<RenewerOptions> renewerOptions,
+        ILogger<LifecycleHandler> logger)
     {
         _http = http;
         _tokens = tokens;
         _alerts = alerts;
+        _recreator = recreator;
+        _renewerOptions = renewerOptions.Value;
         _logger = logger;
     }
 
@@ -46,7 +58,7 @@ public sealed class LifecycleHandler : ILifecycleHandler
                 await RenewSubscriptionAsync(subId, cancellationToken);
                 break;
             case "subscriptionRemoved":
-                FileLog($"WARN: subscription {subId} fue removida por Microsoft. Hay que recrearla manualmente.");
+                await HandleSubscriptionRemovedAsync(subId, cancellationToken);
                 break;
             case "missed":
                 FileLog($"WARN: Graph reporta notifications perdidas en sub {subId}");
@@ -55,6 +67,44 @@ public sealed class LifecycleHandler : ILifecycleHandler
                 FileLog($"WARN: evento desconocido '{ev}'");
                 break;
         }
+    }
+
+    private async Task HandleSubscriptionRemovedAsync(string removedSubId, CancellationToken cancellationToken)
+    {
+        // Buscar la definicion correspondiente en config. Sin ella no podemos recrear:
+        // no sabemos cual era el resource original ni los minutos de expiracion.
+        var def = _renewerOptions.Subscriptions.FirstOrDefault(s =>
+            string.Equals(s.Id, removedSubId, StringComparison.OrdinalIgnoreCase));
+        if (def is null)
+        {
+            FileLog($"REMOVED sub={removedSubId} pero NO esta en RenewerOptions.Subscriptions[]. Auto-recovery imposible: agregue la definicion al config (Resource + ExpirationMinutes) si quiere recovery automatico la proxima vez.");
+            _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+                $"subscriptionRemoved sub={removedSubId} sin definicion en config para auto-recreate");
+            return;
+        }
+
+        FileLog($"REMOVED sub={removedSubId} label={def.Label} resource={def.Resource}. Recreando...");
+
+        var recreated = await _recreator.RecreateAsync(def, cancellationToken);
+        if (recreated is null)
+        {
+            FileLog($"AUTO-RECOVERY FAIL para sub label={def.Label}. Intervencion manual requerida.");
+            _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+                $"AUTO-RECOVERY FAIL para sub label={def.Label} - intervencion manual requerida");
+            return;
+        }
+
+        // Actualizar la definicion in-memory con el id nuevo. La persistencia a User Secrets
+        // queda pendiente: hasta que Felipe actualice el secrets.json, un restart del app
+        // pool re-lee el id viejo y vuelve a fallar el Renewer hasta que llegue otro
+        // subscriptionRemoved y recreemos de nuevo.
+        var oldId = def.Id;
+        def.Id = recreated.NewId;
+        FileLog($"AUTO-RECOVERY OK label={def.Label} oldId={oldId} newId={recreated.NewId} expira={recreated.ExpirationDateTime:o}");
+
+        // Alertar a Felipe con el nuevo ID para que actualice el config persistente.
+        _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+            $"AUTO-RECOVERY de sub label={recreated.Label}: oldId={oldId}, NEW id={recreated.NewId}. Actualice User Secrets Renewer:Subscriptions[].Id para persistir.");
     }
 
     private async Task RenewSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken)

@@ -18,8 +18,39 @@ public sealed class RenewerOptions
     public int ChatExtendMinutes { get; init; } = 55;
     public int MailExtendMinutes { get; init; } = 4230;
 
-    // Ids de subscriptions que debe vigilar.
-    [Required] public string[] SubscriptionIds { get; init; } = Array.Empty<string>();
+    // Legacy: ids de subscriptions que debe vigilar. Si Subscriptions[] esta poblado,
+    // este array se ignora y la fuente de verdad es Subscriptions[].
+    public string[] SubscriptionIds { get; init; } = Array.Empty<string>();
+
+    // Definiciones completas de cada sub gestionada. Necesarias para auto-recovery en
+    // LifecycleHandler cuando Microsoft elimina una sub: sin saber el resource original,
+    // no se puede recrear. Si esta vacio, auto-recovery queda deshabilitado.
+    public SubscriptionDefinition[] Subscriptions { get; init; } = Array.Empty<SubscriptionDefinition>();
+}
+
+// Definicion completa de una Graph subscription gestionada por el handler. Necesaria
+// para recrear automaticamente cuando Microsoft elimina la sub (lifecycle event
+// "subscriptionRemoved"). El campo Id es mutable - despues de auto-recovery la app
+// guarda en memoria el id de la sub recreada; persistencia a disco queda pendiente.
+public sealed class SubscriptionDefinition
+{
+    // Id actual de la sub. Se actualiza in-memory tras auto-recovery; al restart se
+    // re-lee del User Secrets, asi que conviene que Felipe actualice el secrets.json
+    // con el id nuevo cuando AlertManager le notifique el cambio.
+    [Required] public string Id { get; set; } = "";
+
+    // Resource que se vigila (ej "/me/chats/getAllMessages" o
+    // "/me/messages?$select=subject,from,toRecipients,bodyPreview,receivedDateTime,isRead").
+    [Required] public string Resource { get; init; } = "";
+
+    // Minutos hasta expirar al recrear. Topes Microsoft: chats=60, messages=4230.
+    public int ExpirationMinutes { get; init; } = 55;
+
+    // ChangeType que dispara la notification (default: created, separado por coma si son varios).
+    public string ChangeType { get; init; } = "created";
+
+    // Etiqueta legible para logs y alertas (ej "chat" o "mail").
+    public string Label { get; init; } = "";
 }
 
 // Config de la "Webhook app" en Entra: la app que tiene Chat.ReadWrite.All
