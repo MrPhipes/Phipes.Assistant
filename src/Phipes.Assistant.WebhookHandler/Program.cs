@@ -190,13 +190,19 @@ app.MapPost("/webhook/teams", async (
         using var scopeJwt = scopeFactory.CreateScope();
         var jwtValidator = scopeJwt.ServiceProvider.GetRequiredService<IJwtNotificationValidator>();
         var securityOpts = scopeJwt.ServiceProvider.GetRequiredService<IOptions<SecurityOptions>>().Value;
-        var jwtResult = await jwtValidator.ValidateTokensAsync(payload.ValidationTokens ?? new List<string>());
+        var tokens = payload.ValidationTokens ?? new List<string>();
+        var jwtResult = await jwtValidator.ValidateTokensAsync(tokens);
         if (!jwtResult.IsValid)
         {
             Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Jwt", $"INVALID validationTokens: {jwtResult.FailureReason} (shadowMode={(securityOpts.RejectInvalidJwts ? "REJECT" : "LOG-ONLY")})");
             log.LogWarning("validationTokens invalidos: {Reason}", jwtResult.FailureReason);
-            scopeJwt.ServiceProvider.GetRequiredService<IAlertManager>()
-                .Record(AlertCategory.JwtInvalid, jwtResult.FailureReason);
+            // Solo alertar cuando hay tokens presentes pero con firma/claims invalidos.
+            // Ausencia de tokens suele ser ruido (Microsoft retry, scan automatizado).
+            if (tokens.Count > 0)
+            {
+                scopeJwt.ServiceProvider.GetRequiredService<IAlertManager>()
+                    .Record(AlertCategory.JwtInvalid, jwtResult.FailureReason);
+            }
             if (securityOpts.RejectInvalidJwts)
             {
                 return Results.Unauthorized();
@@ -309,12 +315,20 @@ app.MapPost("/webhook/teams/lifecycle", async (
     {
         var jwtValidator = scopeJwt.ServiceProvider.GetRequiredService<IJwtNotificationValidator>();
         var securityOpts = scopeJwt.ServiceProvider.GetRequiredService<IOptions<SecurityOptions>>().Value;
-        var jwtResult = await jwtValidator.ValidateTokensAsync(payload.ValidationTokens ?? new List<string>());
+        var tokens = payload.ValidationTokens ?? new List<string>();
+        var jwtResult = await jwtValidator.ValidateTokensAsync(tokens);
         if (!jwtResult.IsValid)
         {
             Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Jwt-Lifecycle", $"INVALID: {jwtResult.FailureReason} (shadow={(securityOpts.RejectInvalidJwts ? "REJECT" : "LOG-ONLY")})");
-            scopeJwt.ServiceProvider.GetRequiredService<IAlertManager>()
-                .Record(AlertCategory.JwtInvalid, $"lifecycle: {jwtResult.FailureReason}");
+            // Solo alertar cuando hay tokens PRESENTES pero con firma/claims invalidos
+            // (eso si es intento de impersonacion real). Cuando los tokens vienen vacios/ausentes
+            // suele ser Microsoft Graph retry o un scan automatizado contra la URL publica -
+            // descartamos con 401 pero NO alertamos para evitar ruido al chat de alertas.
+            if (tokens.Count > 0)
+            {
+                scopeJwt.ServiceProvider.GetRequiredService<IAlertManager>()
+                    .Record(AlertCategory.JwtInvalid, $"lifecycle: {jwtResult.FailureReason}");
+            }
             if (securityOpts.RejectInvalidJwts) { return Results.Unauthorized(); }
         }
         else
