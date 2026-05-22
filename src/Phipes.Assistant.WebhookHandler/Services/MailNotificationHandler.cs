@@ -25,6 +25,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
     private readonly IClaudeCodeInvoker _claude;
     private readonly IAlertManager _alerts;
     private readonly IWorkingMemoryReader _memory;
+    private readonly ITrustRingClassifier _rings;
     private readonly GraphOptions _graphOptions;
     private readonly ILogger<MailNotificationHandler> _logger;
 
@@ -42,6 +43,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         IClaudeCodeInvoker claude,
         IAlertManager alerts,
         IWorkingMemoryReader memory,
+        ITrustRingClassifier rings,
         IOptions<GraphOptions> graphOptions,
         ILogger<MailNotificationHandler> logger)
     {
@@ -51,6 +53,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         _claude = claude;
         _alerts = alerts;
         _memory = memory;
+        _rings = rings;
         _graphOptions = graphOptions.Value;
         _logger = logger;
     }
@@ -148,6 +151,13 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
             }
         }
 
+        // Clasificar al sender por anillo de confianza. Mail solo tiene header From: sin
+        // tenantId firmado, asi que el classifier usa el dominio del email como senal
+        // (fallback razonable porque Exchange Online ya valido SPF/DKIM/DMARC al recibirlo).
+        var ring = _rings.Classify(senderObjectId: null, senderTenantId: null, senderEmail: fromAddr);
+        var ringPolicy = TrustRingPromptPolicy.ForMail(ring, fromName);
+        FileLog($"RING email={message.Id} from={fromAddr} -> {ring}");
+
         // Pre-cargar contexto de WorkingMemory + CoordinationTasks abiertos del remitente.
         // SubjectEntity sugerido: fromName (clave humana). Para CoordinationTask.Participants
         // usamos el email (UPN), que es la forma estandar en que /coordinar-iniciar los registra.
@@ -164,6 +174,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
             $"unica session global y multiples interlocutores en paralelo - aplica disciplina\n" +
             $"de confidencialidad: lo que otros interlocutores le dijeron NO se comparte aqui\n" +
             $"salvo que corresponda explicitamente.\n\n" +
+            ringPolicy + "\n\n" +
             contextSection +
             $"=== CUERPO ===\n" +
             $"{fullBody}\n\n" +

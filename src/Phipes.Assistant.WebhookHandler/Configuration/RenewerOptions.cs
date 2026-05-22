@@ -18,8 +18,10 @@ public sealed class RenewerOptions
     public int ChatExtendMinutes { get; init; } = 55;
     public int MailExtendMinutes { get; init; } = 4230;
 
-    // Legacy: ids de subscriptions que debe vigilar. Si Subscriptions[] esta poblado,
-    // este array se ignora y la fuente de verdad es Subscriptions[].
+    // Legacy: ids de subscriptions sueltos (sin resource/changeType para auto-recovery).
+    // Si Subscriptions[] esta poblado, gana sobre este array (ver SubscriptionRenewer.
+    // ResolveSubscriptionIds). Mantenido por compatibilidad con configs viejos pero
+    // nuevos deployments deben usar solo Subscriptions[].
     public string[] SubscriptionIds { get; init; } = Array.Empty<string>();
 
     // Definiciones completas de cada sub gestionada. Necesarias para auto-recovery en

@@ -18,6 +18,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
     private readonly IAlertManager _alerts;
     private readonly IMessageAttachmentExtractor _attachmentExtractor;
     private readonly IWorkingMemoryReader _memory;
+    private readonly ITrustRingClassifier _rings;
     private readonly ILogger<TeamsNotificationHandler> _logger;
 
     private string? _myUserId;
@@ -31,6 +32,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         IAlertManager alerts,
         IMessageAttachmentExtractor attachmentExtractor,
         IWorkingMemoryReader memory,
+        ITrustRingClassifier rings,
         ILogger<TeamsNotificationHandler> logger)
     {
         _http = http;
@@ -40,6 +42,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         _alerts = alerts;
         _attachmentExtractor = attachmentExtractor;
         _memory = memory;
+        _rings = rings;
         _logger = logger;
     }
 
@@ -219,6 +222,13 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
                 "puede leerlas directamente como imagen; PDFs / documentos / texto via Read normal.";
         }
 
+        // Clasificar al sender por anillo de confianza (Owner/Internal/Federated/External).
+        // Para Teams tenemos tenantId firmado por Microsoft - verificacion cryptografica fuerte.
+        var senderTenantId = incoming.From?.User?.TenantId;
+        var ring = _rings.Classify(senderId, senderTenantId, sender);
+        var ringPolicy = TrustRingPromptPolicy.ForTeams(ring, sender);
+        FileLog($"RING chat={chatId} sender={sender} tenantId={senderTenantId ?? "(null)"} -> {ring}");
+
         // Pre-cargar contexto de la WorkingMemory + CoordinationTasks abiertos del
         // interlocutor actual. Esto reemplaza el riesgo de que Sarah no llame /recordar
         // por su cuenta - el contexto SIEMPRE llega al prompt. Fail-soft: si la query
@@ -240,6 +250,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
             $"IMPORTANTE: ahora mismo esta respondiendo a {sender}. La memoria que tiene de\n" +
             $"otras conversaciones en paralelo NO se comparte con esta persona salvo que\n" +
             $"corresponda explicitamente (ver feedback memorias sobre confidencialidad).\n\n" +
+            ringPolicy + "\n\n" +
             contextSection +
             $"=== MENSAJE NUEVO ===\n" +
             cleanBody +
@@ -339,6 +350,11 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
     {
         [JsonPropertyName("id")] public string? Id { get; set; }
         [JsonPropertyName("displayName")] public string? DisplayName { get; set; }
+        // tenantId del usuario (firmado por Microsoft, no falsificable). Lo trae el
+        // payload de Graph cuando el chat es cross-tenant; null cuando es usuario del
+        // mismo tenant. Para clasificacion de anillos: si el sender no es del tenant
+        // owner, tenantId aqui es la verificacion fuerte.
+        [JsonPropertyName("tenantId")] public string? TenantId { get; set; }
     }
     private sealed class GraphBody
     {

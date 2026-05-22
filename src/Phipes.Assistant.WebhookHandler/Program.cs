@@ -52,10 +52,16 @@ builder.Services.AddOptions<MonitoringOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<TrustRingOptions>()
+    .Bind(builder.Configuration.GetSection(TrustRingOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
 builder.Services.AddSingleton<IWorkingMemoryReader, SqlWorkingMemoryReader>();
+builder.Services.AddSingleton<ITrustRingClassifier, TrustRingClassifier>();
 builder.Services.AddHttpClient<IJwtNotificationValidator, JwtNotificationValidator>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(10);

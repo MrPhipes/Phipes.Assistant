@@ -34,7 +34,8 @@ public sealed class SubscriptionRenewer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        FileLog($"started, interval={_options.IntervalMinutes}min, watching {_options.SubscriptionIds.Length} subscriptions");
+        var ids = ResolveSubscriptionIds();
+        FileLog($"started, interval={_options.IntervalMinutes}min, watching {ids.Count} subscriptions");
 
         // Primera pasada al arrancar (no esperamos al primer intervalo).
         await RenewAllAsync(stoppingToken);
@@ -46,11 +47,29 @@ public sealed class SubscriptionRenewer : BackgroundService
         }
     }
 
+    // Fuente de verdad de los IDs a renovar: si Subscriptions[] esta poblado (config
+    // moderna, con resource/changeType/label completos para auto-recovery), gana sobre
+    // SubscriptionIds[] (legacy, solo strings sueltos). Esto matchea la documentacion
+    // en RenewerOptions.cs. Antes el Renewer solo miraba SubscriptionIds, lo cual
+    // obligaba a mantener AMBOS arrays sincronizados en secrets.json.
+    private List<string> ResolveSubscriptionIds()
+    {
+        if (_options.Subscriptions.Length > 0)
+        {
+            return _options.Subscriptions
+                .Where(s => !string.IsNullOrEmpty(s.Id))
+                .Select(s => s.Id)
+                .ToList();
+        }
+        return _options.SubscriptionIds.Where(s => !string.IsNullOrEmpty(s)).ToList();
+    }
+
     private async Task RenewAllAsync(CancellationToken cancellationToken)
     {
-        if (_options.SubscriptionIds.Length == 0)
+        var ids = ResolveSubscriptionIds();
+        if (ids.Count == 0)
         {
-            FileLog("WARN: no subscription IDs configured");
+            FileLog("WARN: no subscription IDs configured (ni Subscriptions[] ni SubscriptionIds[])");
             return;
         }
 
@@ -64,7 +83,7 @@ public sealed class SubscriptionRenewer : BackgroundService
             var accessToken = await tokens.GetAccessTokenAsync(cancellationToken);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-            foreach (var subId in _options.SubscriptionIds)
+            foreach (var subId in ids)
             {
                 try
                 {
