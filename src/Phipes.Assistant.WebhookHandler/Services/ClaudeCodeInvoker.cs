@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
@@ -25,6 +26,11 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
     private readonly ILogger<ClaudeCodeInvoker> _logger;
     private readonly Lazy<string> _oauthToken;
 
+    // Semaforos por session-id. Serializa invocaciones a claude.exe sobre la misma sesion
+    // para que dos mensajes Teams seguidos del mismo chat NO produzcan dos procesos Claude
+    // paralelos (caso de duplicados: cada Claude decide independientemente "envio correo").
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
+
     public ClaudeCodeInvoker(IOptions<ClaudeOptions> options, IAlertManager alerts, ILogger<ClaudeCodeInvoker> logger)
     {
         _options = options.Value;
@@ -41,6 +47,31 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         }
 
         var sessionId = DeriveSessionId(chatId);
+
+        // Serializar invocaciones contra la misma sesion. Si llegan 2 mensajes Teams al
+        // mismo chat dentro de pocos segundos, esperamos a que el primero termine antes
+        // de empezar el segundo. Sin esto, dos claude.exe paralelos sobre la misma session
+        // interpretan independientemente y producen acciones duplicadas (caso real: 2 correos).
+        var sessionLock = _sessionLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
+        var lockAcquireStart = DateTime.UtcNow;
+        await sessionLock.WaitAsync(cancellationToken);
+        var lockWaitMs = (DateTime.UtcNow - lockAcquireStart).TotalMilliseconds;
+        if (lockWaitMs > 100)
+        {
+            FileLog($"SERIALIZE chat={chatId} session={sessionId} esperando={lockWaitMs:0}ms (otro turno en curso)");
+        }
+        try
+        {
+            return await AskAsyncInternal(chatId, sessionId, userPrompt, cancellationToken);
+        }
+        finally
+        {
+            sessionLock.Release();
+        }
+    }
+
+    private async Task<string> AskAsyncInternal(string chatId, string sessionId, string userPrompt, CancellationToken cancellationToken)
+    {
         // Archivo flag: si existe, esta sesion ya fue creada en alguna iteracion anterior
         // y debemos usar --resume en vez de --session-id (que tira "already in use").
         // El path se configura via env var HANDLER_SESSIONS_DIR (fallback a TempPath).
@@ -63,6 +94,15 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         }
         args.Add("--output-format"); args.Add("json");
         args.Add("--max-budget-usd"); args.Add(_options.MaxBudgetUsd.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+
+        // Autoriza explicitamente la carpeta donde el MessageAttachmentExtractor deja los
+        // archivos descargados, asi claude.exe puede leerlos sin pedir aprobacion interactiva
+        // (que en modo --print fallaria silenciosamente). Sin esto, Read sobre la carpeta
+        // queda fuera del trust boundary y Claude responde "no tengo permiso para ese path".
+        var attachmentsRoot = Environment.GetEnvironmentVariable("HANDLER_ATTACHMENTS_DIR")
+                              ?? Path.Combine(Path.GetTempPath(), "webhook-handler", "attachments");
+        args.Add("--add-dir"); args.Add(attachmentsRoot);
+        args.Add("--permission-mode"); args.Add("acceptEdits");
         if (!string.IsNullOrWhiteSpace(_options.AppendSystemPrompt))
         {
             args.Add("--append-system-prompt");
@@ -133,7 +173,8 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
             throw new InvalidOperationException("claude.exe devolvio JSON no parseable", ex);
         }
 
-        if (parsed is null || parsed.IsError || string.IsNullOrWhiteSpace(parsed.Result))
+        // Caso A: parsed null o is_error=true → es API error real. Record + throw.
+        if (parsed is null || parsed.IsError)
         {
             FileLog($"CLAUDE ERROR is_error={parsed?.IsError} apiErr={parsed?.ApiErrorStatus} resultLen={parsed?.Result?.Length}");
             _alerts.Record(AlertCategory.ClaudeApiErrors, $"chat={chatId} apiErr={parsed?.ApiErrorStatus ?? "n/a"}");
@@ -142,6 +183,15 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         // Crear flag file solo si esta sesion fue exitosa - asi proximos turnos usan --resume
         try { File.WriteAllText(flagFile, DateTime.UtcNow.ToString("o")); } catch { }
+
+        // Caso B: is_error=false pero Result vacio. Es una decision LEGITIMA del LLM de no
+        // responder (ej. "no conversar en chat de alertas"). NO es error, NO record alerta,
+        // NO throw. Retornamos "" y el caller decide no postear.
+        if (string.IsNullOrWhiteSpace(parsed.Result))
+        {
+            FileLog($"VOID chat={chatId} session={sessionId} elapsed={sw.Elapsed.TotalSeconds:0.0}s cost=${parsed.TotalCostUsd:0.0000} - LLM decidio no responder");
+            return string.Empty;
+        }
 
         FileLog($"OK chat={chatId} session={sessionId} elapsed={sw.Elapsed.TotalSeconds:0.0}s cost=${parsed.TotalCostUsd:0.0000} resultLen={parsed.Result.Length}");
         return parsed.Result.Trim();

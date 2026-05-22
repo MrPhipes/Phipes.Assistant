@@ -172,7 +172,8 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
             throw;
         }
 
-        if (claudeOutput.Trim().Equals("[SKIP]", StringComparison.OrdinalIgnoreCase) ||
+        if (string.IsNullOrWhiteSpace(claudeOutput) ||
+            claudeOutput.Trim().Equals("[SKIP]", StringComparison.OrdinalIgnoreCase) ||
             claudeOutput.Trim().StartsWith("[SKIP]"))
         {
             FileLog($"SKIP decidido por Claude para {message.Id}");

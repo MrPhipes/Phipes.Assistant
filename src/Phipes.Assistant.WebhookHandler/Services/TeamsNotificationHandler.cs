@@ -143,6 +143,13 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         try
         {
             var reply = await BuildResponseAsync(chatId, message, attachments, cancellationToken);
+            // Reply vacio = LLM decidio legitimamente no responder (ej. chat de alertas).
+            // No es error, no postear nada, no alarmar.
+            if (string.IsNullOrWhiteSpace(reply))
+            {
+                FileLog($"REPLY SKIP chat={chatId} (LLM eligio no responder)");
+                return;
+            }
             FileLog($"REPLY READY to chat={chatId}, sender={message.From?.User?.DisplayName} ({senderId})");
             try
             {
