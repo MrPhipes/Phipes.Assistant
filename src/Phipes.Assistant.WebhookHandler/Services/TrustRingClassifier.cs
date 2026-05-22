@@ -30,6 +30,7 @@ public sealed class TrustRingClassifier : ITrustRingClassifier
     private readonly HashSet<string> _ownerObjectIds;
     private readonly HashSet<string> _internalDomains;
     private readonly HashSet<string> _federatedTenants;
+    private readonly HashSet<string> _federatedDomains;
     private readonly string _ownerTenantId;
     private readonly ILogger<TrustRingClassifier> _logger;
 
@@ -40,6 +41,7 @@ public sealed class TrustRingClassifier : ITrustRingClassifier
         _ownerObjectIds   = new HashSet<string>(opts.OwnerObjectIds.Select(NormalizeGuid), StringComparer.OrdinalIgnoreCase);
         _internalDomains  = new HashSet<string>(opts.InternalDomains.Select(d => d.Trim().ToLowerInvariant()), StringComparer.OrdinalIgnoreCase);
         _federatedTenants = new HashSet<string>(opts.FederatedTenantIds.Select(NormalizeGuid), StringComparer.OrdinalIgnoreCase);
+        _federatedDomains = new HashSet<string>(opts.FederatedDomains.Select(d => d.Trim().ToLowerInvariant()), StringComparer.OrdinalIgnoreCase);
         _logger = logger;
     }
 
@@ -67,6 +69,16 @@ public sealed class TrustRingClassifier : ITrustRingClassifier
 
         // Anillo 3: tenant federado configurado en Entra cross-tenant access.
         if (!string.IsNullOrEmpty(tid) && _federatedTenants.Contains(tid))
+        {
+            return TrustRing.Federated;
+        }
+
+        // Anillo 3 fallback por dominio: cuando el sender llega SIN tenantId firmado
+        // (caso tipico de mail SMTP), nos quedamos solo con el header From: el dominio
+        // como senal. Senal mas debil que tenantId firmado, pero suficiente para mail
+        // que ya paso SPF/DKIM/DMARC en Exchange Online. Sin este check, todos los
+        // mails de partners federados caerian erroneamente a External.
+        if (!string.IsNullOrEmpty(domain) && _federatedDomains.Contains(domain))
         {
             return TrustRing.Federated;
         }
