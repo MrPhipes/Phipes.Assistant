@@ -107,6 +107,11 @@ builder.Services.AddHttpClient<ISubscriptionRecreator, SubscriptionRecreator>(c 
     c.Timeout = TimeSpan.FromSeconds(20);
 });
 
+// State store que persiste a disco el id actual de cada Graph subscription. Sobrevive
+// al reinicio del app pool: en el startup se hace merge con el User Secrets para que
+// el id de auto-recovery se mantenga aunque Felipe no toque el config persistente.
+builder.Services.AddSingleton<ISubscriptionStateStore, SubscriptionStateStore>();
+
 // HttpClient dedicado para descargar adjuntos de Teams (hosted images + OneDrive references).
 // Timeout mas grande porque puede ser un PDF de varios MB.
 builder.Services.AddHttpClient<IMessageAttachmentExtractor, MessageAttachmentExtractor>(c =>
@@ -121,6 +126,15 @@ builder.Services.AddHttpClient("alerts", c => c.Timeout = TimeSpan.FromSeconds(1
 builder.Services.AddSingleton<IAlertManager, AlertManager>();
 
 var app = builder.Build();
+
+// Aplicar state persistido sobre las subscriptions del config. Si el state file
+// existe, sus ids ganan sobre los del User Secrets (el state file refleja
+// auto-recoveries previos del LifecycleHandler).
+{
+    var stateStore = app.Services.GetRequiredService<ISubscriptionStateStore>();
+    var renewerOpts = app.Services.GetRequiredService<IOptions<RenewerOptions>>().Value;
+    stateStore.ApplyPersistedIds(renewerOpts.Subscriptions);
+}
 
 // =============== Endpoints ===============
 

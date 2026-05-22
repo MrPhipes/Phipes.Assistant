@@ -22,6 +22,7 @@ public sealed class LifecycleHandler : ILifecycleHandler
     private readonly IWebhookAppTokenProvider _tokens;
     private readonly IAlertManager _alerts;
     private readonly ISubscriptionRecreator _recreator;
+    private readonly ISubscriptionStateStore _stateStore;
     private readonly RenewerOptions _renewerOptions;
     private readonly ILogger<LifecycleHandler> _logger;
 
@@ -35,6 +36,7 @@ public sealed class LifecycleHandler : ILifecycleHandler
         IWebhookAppTokenProvider tokens,
         IAlertManager alerts,
         ISubscriptionRecreator recreator,
+        ISubscriptionStateStore stateStore,
         IOptions<RenewerOptions> renewerOptions,
         ILogger<LifecycleHandler> logger)
     {
@@ -42,6 +44,7 @@ public sealed class LifecycleHandler : ILifecycleHandler
         _tokens = tokens;
         _alerts = alerts;
         _recreator = recreator;
+        _stateStore = stateStore;
         _renewerOptions = renewerOptions.Value;
         _logger = logger;
     }
@@ -94,17 +97,19 @@ public sealed class LifecycleHandler : ILifecycleHandler
             return;
         }
 
-        // Actualizar la definicion in-memory con el id nuevo. La persistencia a User Secrets
-        // queda pendiente: hasta que Felipe actualice el secrets.json, un restart del app
-        // pool re-lee el id viejo y vuelve a fallar el Renewer hasta que llegue otro
-        // subscriptionRemoved y recreemos de nuevo.
+        // Actualizar la definicion in-memory con el id nuevo y persistir a disco. El
+        // state file (ver SubscriptionStateStore) sobrevive a restarts del app pool y
+        // se aplica sobre el config al startup, asi que el id nuevo se mantiene aunque
+        // Felipe no toque el User Secrets.
         var oldId = def.Id;
         def.Id = recreated.NewId;
+        await _stateStore.SaveAsync(_renewerOptions.Subscriptions, cancellationToken);
         FileLog($"AUTO-RECOVERY OK label={def.Label} oldId={oldId} newId={recreated.NewId} expira={recreated.ExpirationDateTime:o}");
 
-        // Alertar a Felipe con el nuevo ID para que actualice el config persistente.
+        // Alertar a Felipe igual: el state file lo hace sobrevivir, pero conviene que
+        // sepa que el id viejo en User Secrets quedo obsoleto.
         _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
-            $"AUTO-RECOVERY de sub label={recreated.Label}: oldId={oldId}, NEW id={recreated.NewId}. Actualice User Secrets Renewer:Subscriptions[].Id para persistir.");
+            $"AUTO-RECOVERY de sub label={recreated.Label}: oldId={oldId}, NEW id={recreated.NewId}. State persistido a disco - User Secrets puede actualizarse al ocio.");
     }
 
     private async Task RenewSubscriptionAsync(string subscriptionId, CancellationToken cancellationToken)
