@@ -17,6 +17,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
     private readonly IClaudeCodeInvoker _claude;
     private readonly IAlertManager _alerts;
     private readonly IMessageAttachmentExtractor _attachmentExtractor;
+    private readonly IWorkingMemoryReader _memory;
     private readonly ILogger<TeamsNotificationHandler> _logger;
 
     private string? _myUserId;
@@ -29,6 +30,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         IClaudeCodeInvoker claude,
         IAlertManager alerts,
         IMessageAttachmentExtractor attachmentExtractor,
+        IWorkingMemoryReader memory,
         ILogger<TeamsNotificationHandler> logger)
     {
         _http = http;
@@ -37,6 +39,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         _claude = claude;
         _alerts = alerts;
         _attachmentExtractor = attachmentExtractor;
+        _memory = memory;
         _logger = logger;
     }
 
@@ -216,14 +219,37 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
                 "puede leerlas directamente como imagen; PDFs / documentos / texto via Read normal.";
         }
 
-        var prompt = $"Acabas de recibir este mensaje en un chat de Microsoft Teams.\n" +
-                     $"Remitente: {sender}" + (senderId is null ? "" : $" (id={senderId})") + "\n" +
-                     $"chatId: {chatId}\n\n" +
-                     $"Mensaje:\n{cleanBody}" +
-                     attachmentSection +
-                     $"\n\nResponde directamente como Sarah Connor en una o dos frases concisas. " +
-                     $"Tu respuesta sera posteada literalmente al chat - no incluyas saludos largos, " +
-                     $"firmas, ni marcadores tipo \"Sarah:\".";
+        // Pre-cargar contexto de la WorkingMemory + CoordinationTasks abiertos del
+        // interlocutor actual. Esto reemplaza el riesgo de que Sarah no llame /recordar
+        // por su cuenta - el contexto SIEMPRE llega al prompt. Fail-soft: si la query
+        // falla, devuelve "" y seguimos sin contexto.
+        // El sender DisplayName es la SubjectEntity (clave humana en WorkingMemory).
+        // El userId/email se usa para buscar en CoordinationTask.Participants (JSON).
+        var contextSection = await _memory.BuildContextSectionAsync(sender, senderId, cancellationToken);
+
+        // Recordatorio explicito de quien escribe AHORA. Sarah opera con una unica
+        // session global y multiples interlocutores en paralelo - sin este header puede
+        // confundir el contexto de una conversacion con otra. Tambien refuerza la
+        // disciplina de confidencialidad: lo que un interlocutor sabe NO automaticamente
+        // se comparte con otro.
+        var prompt =
+            $"=== INTERLOCUTOR ACTUAL ===\n" +
+            $"Canal: Microsoft Teams chat\n" +
+            $"Remitente: {sender}" + (senderId is null ? "" : $" (userId={senderId})") + "\n" +
+            $"chatId: {chatId}\n\n" +
+            $"IMPORTANTE: ahora mismo esta respondiendo a {sender}. La memoria que tiene de\n" +
+            $"otras conversaciones en paralelo NO se comparte con esta persona salvo que\n" +
+            $"corresponda explicitamente (ver feedback memorias sobre confidencialidad).\n\n" +
+            contextSection +
+            $"=== MENSAJE NUEVO ===\n" +
+            cleanBody +
+            attachmentSection +
+            "\n\n=== INSTRUCCIONES ===\n" +
+            $"Responde directamente como Sarah Connor en una o dos frases concisas. " +
+            $"Tu respuesta sera posteada literalmente al chat - no incluyas saludos largos, " +
+            $"firmas, ni marcadores tipo \"Sarah:\". " +
+            $"Despues de responder, si aprendio algo concreto y vigente sobre el interlocutor " +
+            $"(preferencia, decision, compromiso, restriccion), use /anotar-hecho para persistirlo.";
 
         // SIN canned reply: Sarah NUNCA debe sonar a bot. Si claude.exe falla,
         // preferimos silencio - Felipe puede intervenir manualmente o el remitente

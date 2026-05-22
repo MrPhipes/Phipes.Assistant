@@ -24,6 +24,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
     private readonly INotificationDecrypter _decrypter;
     private readonly IClaudeCodeInvoker _claude;
     private readonly IAlertManager _alerts;
+    private readonly IWorkingMemoryReader _memory;
     private readonly GraphOptions _graphOptions;
     private readonly ILogger<MailNotificationHandler> _logger;
 
@@ -40,6 +41,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         INotificationDecrypter decrypter,
         IClaudeCodeInvoker claude,
         IAlertManager alerts,
+        IWorkingMemoryReader memory,
         IOptions<GraphOptions> graphOptions,
         ILogger<MailNotificationHandler> logger)
     {
@@ -48,6 +50,7 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         _decrypter = decrypter;
         _claude = claude;
         _alerts = alerts;
+        _memory = memory;
         _graphOptions = graphOptions.Value;
         _logger = logger;
     }
@@ -91,9 +94,12 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         // Extraemos el id del notification.Resource (ej "Users('...')/messages('AAMkAD...AAA=')").
         if (string.IsNullOrEmpty(message.Id))
         {
+            // Resource viene con casing variable de Microsoft: "messages(...)" en delegated
+            // path, "Messages(...)" en server-side. IgnoreCase para cubrir ambos.
             var match = System.Text.RegularExpressions.Regex.Match(
                 notification.Resource ?? "",
-                @"messages\(['""]([^'""]+)['""]\)");
+                @"messages\(['""]([^'""]+)['""]\)",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (match.Success)
             {
                 message.Id = match.Groups[1].Value;
@@ -142,20 +148,35 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
             }
         }
 
+        // Pre-cargar contexto de WorkingMemory + CoordinationTasks abiertos del remitente.
+        // SubjectEntity sugerido: fromName (clave humana). Para CoordinationTask.Participants
+        // usamos el email (UPN), que es la forma estandar en que /coordinar-iniciar los registra.
+        var contextSection = await _memory.BuildContextSectionAsync(fromName, fromAddr, cancellationToken);
+
         // 4. Prompt a Claude. Le pedimos que decida: [SKIP] o cuerpo del reply.
         var prompt =
-            $"Acabas de recibir este correo electronico (dirigido directamente a usted como destinataria principal).\n" +
+            $"=== INTERLOCUTOR ACTUAL ===\n" +
+            $"Canal: correo electronico (dirigido directamente a usted como destinataria principal)\n" +
             $"De: {fromName} <{fromAddr}>\n" +
             $"Asunto: {message.Subject ?? "(sin asunto)"}\n" +
             $"Recibido: {message.ReceivedDateTime:yyyy-MM-dd HH:mm}\n\n" +
-            $"Cuerpo:\n{fullBody}\n\n" +
+            $"IMPORTANTE: ahora mismo evalua un correo de {fromName}. Sarah opera con una\n" +
+            $"unica session global y multiples interlocutores en paralelo - aplica disciplina\n" +
+            $"de confidencialidad: lo que otros interlocutores le dijeron NO se comparte aqui\n" +
+            $"salvo que corresponda explicitamente.\n\n" +
+            contextSection +
+            $"=== CUERPO ===\n" +
+            $"{fullBody}\n\n" +
+            $"=== INSTRUCCIONES ===\n" +
             $"Decida si responder al correo. Si NO requiere respuesta (informacion, FYI, " +
             $"newsletter, notificacion del sistema, invitacion de reunion ya manejada por " +
             $"otro flujo, mensaje irrelevante), responda EXACTAMENTE con el token `[SKIP]` " +
             $"(sin nada mas, sin explicar).\n\n" +
             $"Si requiere respuesta, escriba SOLAMENTE el cuerpo del reply (texto plano, sin " +
             $"asunto, sin saludo de apertura redundante, sin firma manual - la firma ya esta " +
-            $"configurada en Outlook). MantÃ©ngase concisa, profesional y en su tono Sarah Connor.";
+            $"configurada en Outlook). Mantengase concisa, profesional y en su tono Sarah Connor. " +
+            $"Despues de responder, si aprendio algo concreto y vigente sobre el remitente " +
+            $"(preferencia, decision, compromiso, restriccion), use /anotar-hecho para persistirlo.";
 
         // Usamos un session-id distinto al de chats: usamos conversationId para que toda
         // la hebra de correos con el mismo remitente comparta contexto.

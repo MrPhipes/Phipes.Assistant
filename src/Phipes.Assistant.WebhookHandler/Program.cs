@@ -55,6 +55,7 @@ builder.Services.AddOptions<MonitoringOptions>()
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
+builder.Services.AddSingleton<IWorkingMemoryReader, SqlWorkingMemoryReader>();
 builder.Services.AddHttpClient<IJwtNotificationValidator, JwtNotificationValidator>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(10);

@@ -26,4 +26,10 @@ public sealed class ClaudeOptions
     // de claude.exe. Ahi viven CLAUDE.md, memory/, skills/, sessions/, .credentials.json.
     // Tipicamente C:\Users\<asistente-account>\ClaudeProfile o similar.
     [Required] public string ClaudeHome { get; init; } = "";
+
+    // Session-id global que Sarah usa para TODAS sus conversaciones. Una sola sesion
+    // continua le da vision cross-interlocutor: cuando responde a Yaritza, sabe que
+    // antes hablo con Katerin sobre la misma coordinacion. Si en algun futuro se
+    // operara multi-tenant, cambia el sufijo por tenant (ej "sarah-dimaco-master").
+    public string MasterSessionId { get; init; } = "sarah-server-master";
 }

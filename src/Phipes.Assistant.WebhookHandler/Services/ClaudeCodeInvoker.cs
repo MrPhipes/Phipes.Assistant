@@ -46,12 +46,19 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
             throw new FileNotFoundException($"claude.exe no encontrado en {_options.ExePath}");
         }
 
-        var sessionId = DeriveSessionId(chatId);
+        // Una sola session-id global para Sarah-server. Toda conversacion (sea con
+        // Felipe, Hugo, Yaritza, Katerin, hilos de mail, etc.) pasa por la misma sesion
+        // de claude.exe. Asi Sarah mantiene vision cross-interlocutor y puede coordinar
+        // tareas como "Yaritza confirmo 16:30 - aviso a Katerin" sin que nosotros le
+        // tengamos que pasar el contexto a mano. El identificador del interlocutor entra
+        // en cada prompt via TeamsNotificationHandler/MailNotificationHandler, no en
+        // el session-id.
+        var sessionId = _options.MasterSessionId;
 
-        // Serializar invocaciones contra la misma sesion. Si llegan 2 mensajes Teams al
-        // mismo chat dentro de pocos segundos, esperamos a que el primero termine antes
-        // de empezar el segundo. Sin esto, dos claude.exe paralelos sobre la misma session
-        // interpretan independientemente y producen acciones duplicadas (caso real: 2 correos).
+        // Serializar invocaciones contra la session global. Mientras una invocacion esta
+        // en curso, las otras esperan. Esto es BLOQUEANTE para todo Sarah-server (un
+        // mensaje a la vez), trade-off aceptado para mantener coherencia de estado.
+        // Cuando crezca el volumen habra que repensar (queue + worker pool, batching, etc.).
         var sessionLock = _sessionLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
         var lockAcquireStart = DateTime.UtcNow;
         await sessionLock.WaitAsync(cancellationToken);
@@ -195,20 +202,6 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         FileLog($"OK chat={chatId} session={sessionId} elapsed={sw.Elapsed.TotalSeconds:0.0}s cost=${parsed.TotalCostUsd:0.0000} resultLen={parsed.Result.Length}");
         return parsed.Result.Trim();
-    }
-
-    // Convierte chatId (texto arbitrario) en un UUID v4 estable via SHA1, para que cada chat
-    // tenga su propia conversation continuity en Claude Code.
-    private static string DeriveSessionId(string chatId)
-    {
-        var hash = SHA1.HashData(Encoding.UTF8.GetBytes(chatId));
-        // Tomamos primeros 16 bytes y los formateamos como UUID v4
-        var bytes = new byte[16];
-        Array.Copy(hash, bytes, 16);
-        // Setear bits de version (4) y variant (RFC 4122)
-        bytes[6] = (byte)((bytes[6] & 0x0F) | 0x40);
-        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
-        return new Guid(bytes).ToString();
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";
