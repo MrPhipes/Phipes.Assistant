@@ -22,6 +22,11 @@ namespace Phipes.Assistant.WebhookHandler.Services;
 // excede, se logguea y se omite sin abortar el mensaje entero.
 public interface IMessageAttachmentExtractor
 {
+    // accessToken: token delegated del usuario (sconnor) - usado para hosted images
+    //              (que viven en el endpoint de chats).
+    // Internamente para file references (OneDrive/SharePoint) el extractor pide su
+    // propio token a IWebhookAppTokenProvider porque ese tiene Chat.ReadWrite.All
+    // admin-consented y puede leer attachments donde sconnor delegated no llega.
     Task<IReadOnlyList<ExtractedAttachment>> ExtractAsync(
         string chatId,
         string messageId,
@@ -44,6 +49,7 @@ public sealed class GraphAttachmentRef
 public sealed class MessageAttachmentExtractor : IMessageAttachmentExtractor
 {
     private readonly HttpClient _http;
+    private readonly IWebhookAppTokenProvider _webhookAppTokens;
     private readonly ILogger<MessageAttachmentExtractor> _logger;
 
     private const int MaxAttachmentsPerMessage = 10;
@@ -54,9 +60,13 @@ public sealed class MessageAttachmentExtractor : IMessageAttachmentExtractor
         @"<img[^>]*?\bsrc\s*=\s*['""]?(?<url>https?://[^'""\s>]*?/hostedContents/[^'""\s>]+?/(?:\$value|%24value))['""]?",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    public MessageAttachmentExtractor(HttpClient http, ILogger<MessageAttachmentExtractor> logger)
+    public MessageAttachmentExtractor(
+        HttpClient http,
+        IWebhookAppTokenProvider webhookAppTokens,
+        ILogger<MessageAttachmentExtractor> logger)
     {
         _http = http;
+        _webhookAppTokens = webhookAppTokens;
         _logger = logger;
     }
 
@@ -93,7 +103,24 @@ public sealed class MessageAttachmentExtractor : IMessageAttachmentExtractor
             }
         }
 
-        // 2. File attachments (OneDrive/SharePoint references)
+        // 2. File attachments (OneDrive/SharePoint references). Usamos el token de la
+        // Webhook app (Chat.ReadWrite.All admin-consented) y NO el del usuario delegated
+        // - sconnor no tiene Files.Read.All sobre drives de terceros, asi que el endpoint
+        // /shares con su token devuelve 403 cuando Teams no genero un sharing link
+        // explicito al adjuntar.
+        string? webhookAppToken = null;
+        if (attachments is not null && attachments.Count > 0)
+        {
+            try
+            {
+                webhookAppToken = await _webhookAppTokens.GetAccessTokenAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                FileLog($"webhook app token fail: {ex.Message} - fallback al token de sconnor");
+            }
+        }
+
         if (attachments is not null)
         {
             int idx = 0;
@@ -111,9 +138,39 @@ public sealed class MessageAttachmentExtractor : IMessageAttachmentExtractor
                 try
                 {
                     var filenameSeed = att.Name ?? $"file-{idx}";
-                    var dl = await DownloadAsync(att.ContentUrl, accessToken, baseDir,
-                        $"ref-{idx}-{SanitizeFilename(filenameSeed)}", cancellationToken,
-                        preferredName: att.Name);
+                    var sharesUrl = TryBuildSharesEndpoint(att.ContentUrl);
+                    var tokensToTry = new List<(string label, string token)>();
+                    if (webhookAppToken is not null) tokensToTry.Add(("webhook-app", webhookAppToken));
+                    tokensToTry.Add(("sconnor-delegated", accessToken));
+
+                    ExtractedAttachment? dl = null;
+                    foreach (var (label, tok) in tokensToTry)
+                    {
+                        // Intentar primero /shares/ y luego GET directo, con cada token.
+                        var attempts = new List<string>();
+                        if (sharesUrl is not null) attempts.Add(sharesUrl);
+                        attempts.Add(att.ContentUrl);
+                        foreach (var url in attempts)
+                        {
+                            try
+                            {
+                                dl = await DownloadAsync(url, tok, baseDir,
+                                    $"ref-{idx}-{SanitizeFilename(filenameSeed)}", cancellationToken,
+                                    preferredName: att.Name);
+                                if (dl is not null)
+                                {
+                                    FileLog($"download OK with token={label} via {(url == sharesUrl ? "/shares" : "directUrl")}");
+                                    break;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                FileLog($"download fail with token={label}: {ex.Message}");
+                            }
+                        }
+                        if (dl is not null) break;
+                    }
+
                     if (dl is not null) results.Add(dl);
                     idx++;
                 }
@@ -189,6 +246,28 @@ public sealed class MessageAttachmentExtractor : IMessageAttachmentExtractor
             }
             return new ExtractedAttachment(finalPath, finalName, contentType, total);
         }
+    }
+
+    // Convierte una URL de sharing (OneDrive/SharePoint) en el endpoint /shares/u!{b64url}/driveItem/content
+    // de Microsoft Graph. Si la URL no es de SharePoint/OneDrive devuelve null para que el caller
+    // haga GET directo. Spec: https://learn.microsoft.com/graph/api/shares-get
+    private static string? TryBuildSharesEndpoint(string contentUrl)
+    {
+        if (string.IsNullOrEmpty(contentUrl)) return null;
+        if (!Uri.TryCreate(contentUrl, UriKind.Absolute, out var uri)) return null;
+        var host = uri.Host.ToLowerInvariant();
+        // OneDrive personal corp, SharePoint, OneDrive consumer.
+        var isOneDriveOrSharePoint =
+            host.EndsWith("-my.sharepoint.com") || host.EndsWith(".sharepoint.com") ||
+            host.EndsWith("onedrive.live.com") || host.EndsWith("1drv.ms");
+        if (!isOneDriveOrSharePoint) return null;
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes(contentUrl);
+        var b64 = Convert.ToBase64String(bytes)
+                         .TrimEnd('=')
+                         .Replace('/', '_')
+                         .Replace('+', '-');
+        return $"https://graph.microsoft.com/v1.0/shares/u!{b64}/driveItem/content";
     }
 
     private static string GuessExtension(string contentType) => contentType switch
