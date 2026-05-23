@@ -70,7 +70,17 @@ public sealed class SqlWorkingMemoryReader : IWorkingMemoryReader
                     sb.AppendLine($"      participants={t.Participants}");
                     sb.AppendLine($"      collected={t.CollectedData}");
                 }
-                sb.AppendLine("Si el mensaje entrante responde a uno de estos tasks, llame /coordinar-actualizar con el taskId apropiado ANTES de responder al interlocutor.");
+                // Instruccion imperativa fuerte. Previene dos bugs observados en runtime:
+                // (a) Sarah haciendo VOID a turnos que aportan al task.
+                // (b) Sarah respondiendo en el chat pero olvidando persistir en CollectedData.
+                // La memoria operacional `feedback-no-void-en-chats-de-coordinacion` cubre
+                // este caso pero el LLM con RESUME no siempre la re-lee. Esta seccion del
+                // prompt se inyecta en CADA turno, por eso es la barrera dura.
+                sb.AppendLine();
+                sb.AppendLine("*** PROTOCOLO OBLIGATORIO para este turno (porque hay task abierto donde el interlocutor es participante): ***");
+                sb.AppendLine("  1. NO use VOID / [SKIP] / silencio para este mensaje. Debe responder en el chat aunque sea una frase corta de acuse de recibo.");
+                sb.AppendLine("  2. DESPUES de responder, ejecute /coordinar-actualizar con el taskId apropiado para persistir el aporte de este interlocutor en CollectedData. Sin este paso la nota se pierde.");
+                sb.AppendLine("  3. La politica de anillo (Federated/Internal/External) aplica al CONTENIDO de la respuesta (no compartir info cruzada sin consentimiento), NO a si responder o no — aqui SIEMPRE se responde.");
             }
 
             sb.AppendLine();
