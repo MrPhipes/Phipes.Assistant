@@ -24,6 +24,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
     private readonly ClaudeOptions _options;
     private readonly IAlertManager _alerts;
     private readonly ILogger<ClaudeCodeInvoker> _logger;
+    private readonly IGraphTokenProvider _graphTokenProvider;
     private readonly Lazy<string> _oauthToken;
 
     // Semaforos por session-id. Serializa invocaciones a claude.exe sobre la misma sesion
@@ -31,10 +32,15 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
     // paralelos (caso de duplicados: cada Claude decide independientemente "envio correo").
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
 
-    public ClaudeCodeInvoker(IOptions<ClaudeOptions> options, IAlertManager alerts, ILogger<ClaudeCodeInvoker> logger)
+    public ClaudeCodeInvoker(
+        IOptions<ClaudeOptions> options,
+        IAlertManager alerts,
+        IGraphTokenProvider graphTokenProvider,
+        ILogger<ClaudeCodeInvoker> logger)
     {
         _options = options.Value;
         _alerts = alerts;
+        _graphTokenProvider = graphTokenProvider;
         _logger = logger;
         _oauthToken = new Lazy<string>(() => PsCredentialReader.ReadPassword(_options.OAuthTokenPath));
     }
@@ -135,6 +141,21 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         // memory/, skills/, sessions/, etc.
         psi.Environment["USERPROFILE"] = _options.ClaudeHome;
         psi.Environment["HOME"] = _options.ClaudeHome;
+        // Inyecta el access token de Microsoft Graph (sconnor delegated) que el
+        // TokenBroker mantiene. Los skills (PowerShell) leen $env:M365_ACCESS_TOKEN
+        // — NO leen cred.xml directo, porque ACL DENY (svc-webhook-handler) lo niega
+        // por diseno. Si el broker falla aqui, propagamos la excepcion al caller
+        // (Teams/Mail handler) y el turno se reintenta en la proxima notification.
+        try
+        {
+            psi.Environment["M365_ACCESS_TOKEN"] = await _graphTokenProvider.GetAccessTokenAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            FileLog($"INVOKE FAIL chat={chatId}: no se pudo obtener M365 access token: {ex.Message}");
+            _alerts.Record(AlertCategory.ClaudeApiErrors, $"chat={chatId} M365 token unavailable: {ex.Message}");
+            throw;
+        }
 
         using var process = new Process { StartInfo = psi };
         var stdoutBuilder = new StringBuilder();

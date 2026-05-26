@@ -84,11 +84,28 @@ builder.Logging.AddSimpleConsole(o =>
     o.SingleLine = true;
 });
 
-// HttpClient dedicado para Microsoft Identity Platform (oauth2/v2.0/token).
-builder.Services.AddHttpClient<IGraphTokenProvider, GraphTokenProvider>(c =>
+// IGraphTokenProvider — si Broker:ListenUrl está configurado, usar el broker
+// remoto (servicio aislado bajo svc-token-broker). Si no, fallback al legacy
+// que lee cred.xml directo. La idea: migración gradual sin romper deploys.
+builder.Services.AddOptions<BrokerClientOptions>()
+    .Bind(builder.Configuration.GetSection(BrokerClientOptions.SectionName));
+
+var brokerSection = builder.Configuration.GetSection(BrokerClientOptions.SectionName);
+var brokerUrl = brokerSection["ListenUrl"];
+if (!string.IsNullOrWhiteSpace(brokerUrl))
 {
-    c.Timeout = TimeSpan.FromSeconds(15);
-});
+    builder.Services.AddHttpClient<IGraphTokenProvider, BrokerGraphTokenProvider>(c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(15);
+    });
+}
+else
+{
+    builder.Services.AddHttpClient<IGraphTokenProvider, GraphTokenProvider>(c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(15);
+    });
+}
 
 // HttpClient dedicado para Microsoft Graph API (Teams).
 builder.Services.AddHttpClient<ITeamsNotificationHandler, TeamsNotificationHandler>(c =>

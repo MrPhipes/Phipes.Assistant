@@ -50,14 +50,17 @@ Cada servicio puede usarse por separado.
        │                     │  • Dedupe (MSSQL)    │
        │                     │  • Invoca claude.exe │
        │                     │  • Postea reply      │
-       │                     └──────────┬───────────┘
-       │                                │
-       │                                ▼
-       │                     ┌──────────────────────┐
-       │                     │  claude.exe --print  │
-       │                     │  (Claude Code)       │
-       │                     │  + skills personales │
-       │                     └──────────────────────┘
+       │                     └──────┬─────────┬─────┘
+       │                            │         │ GET /token (loopback + X-Broker-Secret)
+       │                            ▼         ▼
+       │            ┌──────────────────┐  ┌──────────────────────┐
+       │            │ claude.exe       │  │ Phipes.Assistant.    │
+       │            │ --print          │  │ TokenBroker          │
+       │            │ (Claude Code)    │  │ (svc-token-broker)   │
+       │            │ + skills + el AT │  │ • Único lector del   │
+       │            │   inyectado como │  │   refresh token (RT) │
+       │            │ $M365_ACCESS_..  │  │ • Rota y cachea el AT │
+       │            └──────────────────┘  └──────────────────────┘
        │
        │   (la misma máquina hostea también:)
        │   
@@ -157,9 +160,11 @@ respuesta del asistente. Corre como IIS site con **app pool always-on**.
 | `MailNotificationHandler`        | Procesa correos → filtra no-reply / no-en-TO → invoca Claude (que puede decidir `[SKIP]`).         |
 | `LifecycleHandler`               | Renueva subscriptions al recibir `reauthorizationRequired`.                                        |
 | `SubscriptionRenewer`            | `BackgroundService` que cada 30 min hace PATCH preventivo a las subscriptions configuradas.       |
-| `ClaudeCodeInvoker`              | Spawn `claude.exe --print` con OAuth long-lived token + perfil personalizado.                     |
-| `GraphTokenProvider`             | Maneja refresh + rotación del token OAuth de la app pública para llamadas Graph.                  |
-| `WebhookAppTokenProvider`        | Idem para la "Webhook app" propia (la que tiene admin-consent para crear subscriptions).         |
+| `ClaudeCodeInvoker`              | Spawn `claude.exe --print` con OAuth long-lived token + perfil personalizado. Inyecta el access token de Graph como `$M365_ACCESS_TOKEN` para que los skills no lean el `cred.xml` directo. |
+| `IGraphTokenProvider`            | Abstracción del access token de Graph. Dos implementaciones según config (ver `Broker:ListenUrl`): |
+| ↳ `BrokerGraphTokenProvider`     | **(recomendada)** Pide el AT al `TokenBroker` local por HTTP. El handler nunca toca el `refresh token`. |
+| ↳ `GraphTokenProvider`           | **(legacy/fallback)** Lee el `cred.xml` directo y maneja refresh + rotación en proceso.            |
+| `WebhookAppTokenProvider`        | Token de la "Webhook app" propia (la que tiene admin-consent para crear subscriptions).           |
 | `FileLogger`                     | Centraliza logging a archivo. Path configurable via env var `HANDLER_LOG_DIR`.                    |
 
 ### Skills disponibles
@@ -189,6 +194,58 @@ calendar propios). El propietario humano le otorga:
 - **NO** se otorga `Send-As`: el asistente nunca suplanta al jefe en envíos. Cuando
   responde mails del jefe, envía desde su propio mailbox con CC al jefe; cuando agenda
   reuniones, las crea en su propio calendario invitando al jefe como required.
+
+---
+
+## Phipes.Assistant.TokenBroker
+
+Servicio Windows (.NET 10) que **aísla el refresh token (RT) de Microsoft 365** en un
+proceso aparte, corriendo bajo su propia cuenta de servicio (p. ej. `svc-token-broker`).
+Es la **fuente única** del access token (AT) de Graph para todo el sistema.
+
+### Por qué existe
+
+El RT es la credencial más sensible del proyecto: con él se obtiene acceso delegado al
+mailbox, calendario y Teams del jefe. Si el `cred.xml` que lo contiene fuera legible por
+el proceso del handler (o por la propia instancia de Claude Code que corre como ese
+usuario), un fallo de comportamiento del agente podría leerlo, corromperlo o borrarlo.
+
+La solución es **separación de privilegios a nivel de sistema operativo**:
+
+- El `cred.xml` del RT se cifra con **DPAPI scope CurrentUser** bajo el SID de
+  `svc-token-broker`. Por ACL, **ningún otro usuario** (ni `svc-webhook-handler`, ni la
+  instancia de Claude Code) puede leerlo ni descifrarlo.
+- El handler y los skills **nunca** ven el RT. Piden un AT de corta vida al broker por
+  HTTP en loopback, y reciben solo eso.
+- Como el broker es el único que rota el RT, se elimina la clase de bug de
+  "dos procesos comparten el mismo `cred.xml` y se desincronizan" (`invalid_grant`).
+
+### Endpoints (solo loopback `127.0.0.1`)
+
+| Endpoint        | Función                                                                 |
+|-----------------|-------------------------------------------------------------------------|
+| `GET /token`    | Devuelve un AT válido (`{access_token, expires_at_utc}`). Refresca si el cache está por vencer. |
+| `POST /refresh` | Fuerza una rotación inmediata del RT.                                    |
+| `GET /health`   | Estado sin exponer el AT (last refresh, expiración, contador, último error). |
+
+Kestrel escucha **solo en loopback**; además, cada request debe traer el header
+`X-Broker-Secret` (comparado en tiempo constante) o recibe `401`. Es una defensa contra
+otros procesos del mismo host que descubran el puerto. Un `BackgroundService` interno
+refresca el RT proactivamente cada 30 min, de modo que una revocación se detecta en el
+próximo tick y no cuando un usuario está esperando respuesta.
+
+### Cómo lo consume el handler
+
+El `WebhookHandler` resuelve `IGraphTokenProvider` según config: si `Broker:ListenUrl`
+está definido usa `BrokerGraphTokenProvider` (pide el AT al broker); si no, cae al
+`GraphTokenProvider` legacy (lee el `cred.xml` directo). Esto permite migración gradual.
+El AT obtenido se inyecta a `claude.exe` como variable de entorno `M365_ACCESS_TOKEN`,
+así los skills (PowerShell) lo usan sin tocar disco.
+
+> Configuración: ver sección `Broker` de `appsettings.json`. Los valores sensibles
+> (`CredXmlPath`, `TenantId`, `Secret`) van vacíos en el repo y se inyectan vía
+> User Secrets o variables de entorno del servicio. El `Scope` declara el conjunto de
+> permisos delegados **mínimos** que usan los skills.
 
 ---
 
