@@ -57,6 +57,12 @@ builder.Services.AddOptions<TrustRingOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+// WaNotifier no lleva [Required], asi que solo ValidateOnStart (binding + startup check)
+// sin ValidateDataAnnotations.
+builder.Services.AddOptions<WaNotifierOptions>()
+    .Bind(builder.Configuration.GetSection(WaNotifierOptions.SectionName))
+    .ValidateOnStart();
+
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
@@ -148,6 +154,14 @@ builder.Services.AddHttpClient<IMessageAttachmentExtractor, MessageAttachmentExt
 // resolver el IGraphTokenProvider sin captar un scope vivo.
 builder.Services.AddHttpClient("alerts", c => c.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddSingleton<IAlertManager, AlertManager>();
+
+// WaProactiveNotifier (Fase 2): vigila el staging de WhatsApp y avisa a Felipe por Teams
+// cuando un contacto por el que pregunto le escribe dentro de la ventana. Named HttpClient
+// "wanotifier" para las llamadas a Graph; resuelve IGraphTokenProvider por tick via
+// IServiceScopeFactory (no captura scope vivo). Si WaNotifier:Enabled=false, el servicio
+// arranca pero no arma el timer (no-op).
+builder.Services.AddHttpClient("wanotifier", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddHostedService<WaProactiveNotifier>();
 
 var app = builder.Build();
 
