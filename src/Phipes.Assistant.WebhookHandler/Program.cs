@@ -57,6 +57,12 @@ builder.Services.AddOptions<TrustRingOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+// WaNotifier no lleva [Required], asi que solo ValidateOnStart (binding + startup check)
+// sin ValidateDataAnnotations.
+builder.Services.AddOptions<WaNotifierOptions>()
+    .Bind(builder.Configuration.GetSection(WaNotifierOptions.SectionName))
+    .ValidateOnStart();
+
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
@@ -84,11 +90,28 @@ builder.Logging.AddSimpleConsole(o =>
     o.SingleLine = true;
 });
 
-// HttpClient dedicado para Microsoft Identity Platform (oauth2/v2.0/token).
-builder.Services.AddHttpClient<IGraphTokenProvider, GraphTokenProvider>(c =>
+// IGraphTokenProvider — si Broker:ListenUrl está configurado, usar el broker
+// remoto (servicio aislado bajo svc-token-broker). Si no, fallback al legacy
+// que lee cred.xml directo. La idea: migración gradual sin romper deploys.
+builder.Services.AddOptions<BrokerClientOptions>()
+    .Bind(builder.Configuration.GetSection(BrokerClientOptions.SectionName));
+
+var brokerSection = builder.Configuration.GetSection(BrokerClientOptions.SectionName);
+var brokerUrl = brokerSection["ListenUrl"];
+if (!string.IsNullOrWhiteSpace(brokerUrl))
 {
-    c.Timeout = TimeSpan.FromSeconds(15);
-});
+    builder.Services.AddHttpClient<IGraphTokenProvider, BrokerGraphTokenProvider>(c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(15);
+    });
+}
+else
+{
+    builder.Services.AddHttpClient<IGraphTokenProvider, GraphTokenProvider>(c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(15);
+    });
+}
 
 // HttpClient dedicado para Microsoft Graph API (Teams).
 builder.Services.AddHttpClient<ITeamsNotificationHandler, TeamsNotificationHandler>(c =>
@@ -131,6 +154,14 @@ builder.Services.AddHttpClient<IMessageAttachmentExtractor, MessageAttachmentExt
 // resolver el IGraphTokenProvider sin captar un scope vivo.
 builder.Services.AddHttpClient("alerts", c => c.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddSingleton<IAlertManager, AlertManager>();
+
+// WaProactiveNotifier (Fase 2): vigila el staging de WhatsApp y avisa a Felipe por Teams
+// cuando un contacto por el que pregunto le escribe dentro de la ventana. Named HttpClient
+// "wanotifier" para las llamadas a Graph; resuelve IGraphTokenProvider por tick via
+// IServiceScopeFactory (no captura scope vivo). Si WaNotifier:Enabled=false, el servicio
+// arranca pero no arma el timer (no-op).
+builder.Services.AddHttpClient("wanotifier", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddHostedService<WaProactiveNotifier>();
 
 var app = builder.Build();
 

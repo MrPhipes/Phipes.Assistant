@@ -1,6 +1,9 @@
 # .NET
 bin/
 obj/
+# Output de publish local (no versionar binarios)
+_publish*/
+publish/
 *.user
 *.suo
 *.vs/

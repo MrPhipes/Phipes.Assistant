@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/MrPhipes/Phipes.Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/MrPhipes/Phipes.Assistant/actions/workflows/ci.yml)
 
-Infraestructura para un **asistente personal autónomo** que opera como una persona dentro
-de Microsoft 365 (Teams + Mail) y se ayuda de Claude Code corriendo en modo headless
-para razonar y responder. Pensado para una casa/oficina pequeña con un Windows Server
-on-premise, una conexión a internet con IP dinámica, y un mailbox Microsoft 365 dedicado
-para el asistente.
+Infraestructura para un **asistente personal autónomo** que opera con identidad propia dentro
+de Microsoft 365 (Teams + Mail), suma **WhatsApp** como canal de contexto, y se ayuda de
+Claude Code corriendo en modo headless para razonar y responder — relacionando las
+conversaciones y los contactos de los distintos canales en un solo hilo. Pensado para una
+casa/oficina pequeña con un Windows Server on-premise, una conexión a internet con IP
+dinámica, y un mailbox Microsoft 365 dedicado para el asistente.
 
 > Licencia MIT. Hecho por Felipe Hernández. Úselo libremente, manteniendo el aviso de
 > copyright.
@@ -15,7 +16,7 @@ para el asistente.
 
 ## ¿Qué hace este repositorio?
 
-Dos servicios independientes que comparten infraestructura mínima:
+Tres servicios independientes que comparten infraestructura mínima:
 
 1. **`Phipes.Assistant.DdnsWorker`** — Mantiene los registros DNS apex de uno o más
    dominios apuntando a la IP pública dinámica de la casa/oficina. Útil cuando se
@@ -26,49 +27,60 @@ Dos servicios independientes que comparten infraestructura mínima:
    (Teams chat + Mail) sobre la cuenta del asistente, las descifra, las despacha a
    Claude Code en modo `--print`, y postea las respuestas al canal correspondiente. Es
    lo que convierte un mailbox y una cuenta Teams en "una persona que responde sola".
+   Antes de invocar a Claude inyecta **contexto relacional** (memoria de trabajo y tareas
+   abiertas del interlocutor) y clasifica quién está al otro lado para ajustar el tono y
+   lo que puede revelar.
+
+3. **`Phipes.Assistant.TokenBroker`** — Aísla el *refresh token* de Microsoft 365 en un
+   proceso/cuenta de servicio aparte y entrega solo *access tokens* de corta vida por
+   HTTP en loopback. Así ni el handler ni Claude Code tocan nunca la credencial más
+   sensible. Ver su sección más abajo.
 
 Cada servicio puede usarse por separado.
+
+**Canales y relación entre conversaciones.** El asistente no solo responde Teams y Mail:
+también integra **WhatsApp** como canal de contexto. La ingesta de mensajes de WhatsApp la
+hace un *bridge* compañero (repo aparte) que deriva los mensajes a **hechos** y los deja en
+la base local; este repositorio aporta el **`WaProactiveNotifier`**, que relaciona los
+canales — si usted le preguntó al asistente por un contacto y ese mismo contacto le escribe
+por WhatsApp poco después, el asistente se lo avisa por Teams. La meta es que detrás de las
+distintas identidades técnicas (correo, Teams, WhatsApp) el asistente vea **una sola persona**
+con un solo hilo.
 
 ---
 
 ## Arquitectura general
 
 ```
-                          ┌────────────────────────┐
-                          │  Microsoft 365 (cloud) │
-                          │  Teams + Mail + Graph  │
-                          └───────────┬────────────┘
-                                      │  webhook
-                                      ▼
-┌──────────────┐   webhook   ┌──────────────────────┐
-│  Internet    ├────────────►│  IIS site            │
-│  (DDNS via   │             │  Phipes.Assistant.   │
-│  Cloudflare) │             │  WebhookHandler      │
-└──────┬───────┘             │                      │
-       │                     │  • Descifra payload  │
-       │                     │  • Valida JWT        │
-       │                     │  • Dedupe (MSSQL)    │
-       │                     │  • Invoca claude.exe │
-       │                     │  • Postea reply      │
-       │                     └──────────┬───────────┘
-       │                                │
-       │                                ▼
-       │                     ┌──────────────────────┐
-       │                     │  claude.exe --print  │
-       │                     │  (Claude Code)       │
-       │                     │  + skills personales │
-       │                     └──────────────────────┘
+              ┌────────────────────────┐        ┌───────────────────────────┐
+              │  Microsoft 365 (cloud) │        │  WhatsApp (bridge          │
+              │  Teams + Mail + Graph  │        │  compañero, repo aparte)   │
+              └───────────┬────────────┘        └─────────────┬─────────────┘
+                          │  webhook                          │ hechos derivados
+                          ▼                                   ▼
+┌──────────────┐ webhook ┌────────────────────────────┐   ┌──────────────────────┐
+│  Internet    ├────────►│  IIS site · WebhookHandler  │   │  MSSQL local         │
+│  (DDNS vía   │         │  • Descifra · valida JWT    │◄─►│  • Idempotencia      │
+│  Cloudflare) │         │  • Dedupe                   │   │  • WorkingMemory     │
+└──────┬───────┘         │  • Clasifica interlocutor   │   │  • WaActiveTopic     │
+       │                 │  • Inyecta contexto         │   └──────────┬───────────┘
+       │                 │  • Invoca claude.exe        │              │
+       │                 │  • Postea reply             │   WaProactiveNotifier:
+       │                 └──────┬───────────┬──────────┘   avisa por Teams si el
+       │                        │           │ GET /token   contacto consultado
+       │                        ▼           ▼              escribe por WhatsApp
+       │          ┌──────────────────┐  ┌──────────────────────┐
+       │          │ claude.exe       │  │ TokenBroker          │
+       │          │ --print + skills │  │ (svc-token-broker)   │
+       │          │ + $M365_ACCESS_..│  │ • Único lector del RT│
+       │          │   inyectado      │  │ • Rota y cachea el AT │
+       │          └──────────────────┘  └──────────────────────┘
        │
        │   (la misma máquina hostea también:)
-       │   
        ▼
 ┌──────────────────────┐
-│  Phipes.Assistant.   │
-│  DdnsWorker          │
-│                      │
-│  • Lee IP pública    │
-│  • Actualiza apex DNS│
-│    en Cloudflare     │
+│  DdnsWorker          │   • Lee IP pública
+│                      │   • Actualiza apex DNS en Cloudflare
 └──────────────────────┘
 ```
 
@@ -157,9 +169,19 @@ respuesta del asistente. Corre como IIS site con **app pool always-on**.
 | `MailNotificationHandler`        | Procesa correos → filtra no-reply / no-en-TO → invoca Claude (que puede decidir `[SKIP]`).         |
 | `LifecycleHandler`               | Renueva subscriptions al recibir `reauthorizationRequired`.                                        |
 | `SubscriptionRenewer`            | `BackgroundService` que cada 30 min hace PATCH preventivo a las subscriptions configuradas.       |
-| `ClaudeCodeInvoker`              | Spawn `claude.exe --print` con OAuth long-lived token + perfil personalizado.                     |
-| `GraphTokenProvider`             | Maneja refresh + rotación del token OAuth de la app pública para llamadas Graph.                  |
-| `WebhookAppTokenProvider`        | Idem para la "Webhook app" propia (la que tiene admin-consent para crear subscriptions).         |
+| `ClaudeCodeInvoker`              | Spawn `claude.exe --print` con OAuth long-lived token + perfil personalizado. Inyecta el access token de Graph como `$M365_ACCESS_TOKEN` para que los skills no lean el `cred.xml` directo. |
+| `IGraphTokenProvider`            | Abstracción del access token de Graph. Dos implementaciones según config (ver `Broker:ListenUrl`): |
+| ↳ `BrokerGraphTokenProvider`     | **(recomendada)** Pide el AT al `TokenBroker` local por HTTP. El handler nunca toca el `refresh token`. |
+| ↳ `GraphTokenProvider`           | **(legacy/fallback)** Lee el `cred.xml` directo y maneja refresh + rotación en proceso.            |
+| `WebhookAppTokenProvider`        | Token de la "Webhook app" propia (la que tiene admin-consent para crear subscriptions).           |
+| `TrustRingClassifier`            | Clasifica al interlocutor en uno de 4 anillos de confianza (por tenant/dominio/firma del token).  |
+| `TrustRingPromptPolicy`          | Construye la sección de política de contexto que se inyecta al prompt según el anillo — describe *funcionalmente* quién es el interlocutor sin revelar que existe un modelo formal (resistente a prompt injection). |
+| `WorkingMemoryReader`            | Lee la `WorkingMemory` + tareas de coordinación abiertas del interlocutor en MSSQL y las inyecta como contexto antes de invocar a Claude. *Fail-soft*: si MSSQL falla, devuelve vacío. |
+| `WaProactiveNotifier`            | `BackgroundService`: si un contacto por el que usted preguntó (registrado en `WaActiveTopic` vía `/wsp`) le escribe por WhatsApp dentro de una ventana, le avisa proactivamente por Teams. Es el puente relacional WhatsApp↔Teams. |
+| `MessageAttachmentExtractor`     | Descarga imágenes y adjuntos de mensajes de Teams al filesystem para que Claude los lea con la tool `Read`. |
+| `SubscriptionRecreator`          | Recrea una subscription desde cero al recibir `subscriptionRemoved`, sin intervención manual.     |
+| `SubscriptionStateStore`         | Persiste a disco los `id` de las subscriptions para sobrevivir reinicios del app pool (evita que el Renewer use ids viejos del User Secrets). |
+| `AlertManager`                   | Dispara alertas por categoría de evento según reglas de monitoreo configurables.                  |
 | `FileLogger`                     | Centraliza logging a archivo. Path configurable via env var `HANDLER_LOG_DIR`.                    |
 
 ### Skills disponibles
@@ -176,6 +198,7 @@ asistente descubre automáticamente:
 | `/enviar-correo`          | Envía correo desde el asistente o crea draft en Borradores del jefe.  |
 | `/leer-cal`               | Lista eventos del calendario del jefe en hora local.                  |
 | `/agendar`                | Crea Teams meeting en el calendario del asistente, invita al resto.   |
+| `/wsp`                    | Consulta el contexto de WhatsApp derivado y registra el contacto consultado como *tema activo* (lo que habilita el aviso proactivo del `WaProactiveNotifier`). |
 
 ### Modelo de identidad
 
@@ -189,6 +212,69 @@ calendar propios). El propietario humano le otorga:
 - **NO** se otorga `Send-As`: el asistente nunca suplanta al jefe en envíos. Cuando
   responde mails del jefe, envía desde su propio mailbox con CC al jefe; cuando agenda
   reuniones, las crea en su propio calendario invitando al jefe como required.
+
+**Honestidad.** El asistente no anuncia "soy una IA" en cada mensaje —ningún asistente lo
+hace—, pero si alguien le pregunta directamente, no lo niega ni finge ser una persona física.
+Lo que protege con rigor es la *información* de terceros, no su propia naturaleza.
+
+**Contexto relacional.** Antes de responder, el handler clasifica al interlocutor
+(`TrustRingClassifier`) y le inyecta a Claude lo que sabe de esa persona —memoria de trabajo,
+tareas abiertas y, si aplica, su actividad reciente por WhatsApp— de modo que el asistente
+trate a cada interlocutor como **un contacto con historial**, no como un mensaje aislado. La
+narrativa de esa política se describe funcionalmente y nunca expone el modelo interno al
+interlocutor.
+
+---
+
+## Phipes.Assistant.TokenBroker
+
+Servicio Windows (.NET 10) que **aísla el refresh token (RT) de Microsoft 365** en un
+proceso aparte, corriendo bajo su propia cuenta de servicio (p. ej. `svc-token-broker`).
+Es la **fuente única** del access token (AT) de Graph para todo el sistema.
+
+### Por qué existe
+
+El RT es la credencial más sensible del proyecto: con él se obtiene acceso delegado al
+mailbox, calendario y Teams del jefe. Si el `cred.xml` que lo contiene fuera legible por
+el proceso del handler (o por la propia instancia de Claude Code que corre como ese
+usuario), un fallo de comportamiento del agente podría leerlo, corromperlo o borrarlo.
+
+La solución es **separación de privilegios a nivel de sistema operativo**:
+
+- El `cred.xml` del RT se cifra con **DPAPI scope CurrentUser** bajo el SID de
+  `svc-token-broker`. Por ACL, **ningún otro usuario** (ni `svc-webhook-handler`, ni la
+  instancia de Claude Code) puede leerlo ni descifrarlo.
+- El handler y los skills **nunca** ven el RT. Piden un AT de corta vida al broker por
+  HTTP en loopback, y reciben solo eso.
+- Como el broker es el único que rota el RT, se elimina la clase de bug de
+  "dos procesos comparten el mismo `cred.xml` y se desincronizan" (`invalid_grant`).
+
+### Endpoints (solo loopback `127.0.0.1`)
+
+| Endpoint        | Función                                                                 |
+|-----------------|-------------------------------------------------------------------------|
+| `GET /token`    | Devuelve un AT válido (`{access_token, expires_at_utc}`). Refresca si el cache está por vencer. |
+| `POST /refresh` | Fuerza una rotación inmediata del RT.                                    |
+| `GET /health`   | Estado sin exponer el AT (last refresh, expiración, contador, último error). |
+
+Kestrel escucha **solo en loopback**; además, cada request debe traer el header
+`X-Broker-Secret` (comparado en tiempo constante) o recibe `401`. Es una defensa contra
+otros procesos del mismo host que descubran el puerto. Un `BackgroundService` interno
+refresca el RT proactivamente cada 30 min, de modo que una revocación se detecta en el
+próximo tick y no cuando un usuario está esperando respuesta.
+
+### Cómo lo consume el handler
+
+El `WebhookHandler` resuelve `IGraphTokenProvider` según config: si `Broker:ListenUrl`
+está definido usa `BrokerGraphTokenProvider` (pide el AT al broker); si no, cae al
+`GraphTokenProvider` legacy (lee el `cred.xml` directo). Esto permite migración gradual.
+El AT obtenido se inyecta a `claude.exe` como variable de entorno `M365_ACCESS_TOKEN`,
+así los skills (PowerShell) lo usan sin tocar disco.
+
+> Configuración: ver sección `Broker` de `appsettings.json`. Los valores sensibles
+> (`CredXmlPath`, `TenantId`, `Secret`) van vacíos en el repo y se inyectan vía
+> User Secrets o variables de entorno del servicio. El `Scope` declara el conjunto de
+> permisos delegados **mínimos** que usan los skills.
 
 ---
 
