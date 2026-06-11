@@ -1,4 +1,5 @@
-﻿using System.Net.Http.Headers;
+﻿using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -78,20 +79,41 @@ public sealed class SubscriptionRenewer : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var tokens = scope.ServiceProvider.GetRequiredService<IWebhookAppTokenProvider>();
             var httpFactory = scope.ServiceProvider.GetRequiredService<IHttpClientFactory>();
+            var recreator = scope.ServiceProvider.GetRequiredService<ISubscriptionRecreator>();
+            var stateStore = scope.ServiceProvider.GetRequiredService<ISubscriptionStateStore>();
             var http = httpFactory.CreateClient("renewer");
 
             var accessToken = await tokens.GetAccessTokenAsync(cancellationToken);
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-            foreach (var subId in ids)
+            if (_options.Subscriptions.Length > 0)
             {
-                try
+                foreach (var def in _options.Subscriptions.Where(s => !string.IsNullOrEmpty(s.Id)))
                 {
-                    await RenewOneAsync(http, subId, cancellationToken);
+                    try
+                    {
+                        await RenewOneAsync(http, def, recreator, stateStore, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog($"FAIL sub={def.Id}: {ex.Message}");
+                    }
                 }
-                catch (Exception ex)
+            }
+            else
+            {
+                // Legacy: ids sueltos sin definicion. Sin Resource/ExpirationMinutes no hay
+                // auto-recovery posible; solo renovacion.
+                foreach (var subId in ids)
                 {
-                    FileLog($"FAIL sub={subId}: {ex.Message}");
+                    try
+                    {
+                        await RenewOneAsync(http, def: null, recreator, stateStore, cancellationToken, legacyId: subId);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLog($"FAIL sub={subId}: {ex.Message}");
+                    }
                 }
             }
         }
@@ -101,11 +123,27 @@ public sealed class SubscriptionRenewer : BackgroundService
         }
     }
 
-    private async Task RenewOneAsync(HttpClient http, string subscriptionId, CancellationToken cancellationToken)
+    private async Task RenewOneAsync(
+        HttpClient http,
+        SubscriptionDefinition? def,
+        ISubscriptionRecreator recreator,
+        ISubscriptionStateStore stateStore,
+        CancellationToken cancellationToken,
+        string? legacyId = null)
     {
+        var subscriptionId = def?.Id ?? legacyId ?? "";
+
         // 1. GET para saber estado actual y resource.
         using var getReq = new HttpRequestMessage(HttpMethod.Get, $"https://graph.microsoft.com/v1.0/subscriptions/{subscriptionId}");
         using var getResp = await http.SendAsync(getReq, cancellationToken);
+        if (getResp.StatusCode == HttpStatusCode.NotFound)
+        {
+            // La sub ya no existe en Graph (expiro durante un outage prolongado, o
+            // Microsoft la elimino sin mandar el lifecycle subscriptionRemoved).
+            // Mismo auto-recovery que LifecycleHandler.HandleSubscriptionRemovedAsync.
+            await RecreateAsync(def, subscriptionId, recreator, stateStore, cancellationToken);
+            return;
+        }
         if (!getResp.IsSuccessStatusCode)
         {
             var body = await getResp.Content.ReadAsStringAsync(cancellationToken);
@@ -146,6 +184,38 @@ public sealed class SubscriptionRenewer : BackgroundService
             _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
                 $"sub={subscriptionId} HTTP {(int)patchResp.StatusCode}");
         }
+    }
+
+    private async Task RecreateAsync(
+        SubscriptionDefinition? def,
+        string deadSubId,
+        ISubscriptionRecreator recreator,
+        ISubscriptionStateStore stateStore,
+        CancellationToken cancellationToken)
+    {
+        if (def is null)
+        {
+            FileLog($"GET 404 sub={deadSubId} (legacy SubscriptionIds[], sin definicion). Auto-recovery imposible: migre el config a Subscriptions[] con Resource + ExpirationMinutes.");
+            _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+                $"sub={deadSubId} eliminada en Graph y sin definicion en config para auto-recreate");
+            return;
+        }
+
+        FileLog($"GET 404 sub={deadSubId} label={def.Label}: la sub ya no existe en Graph. Recreando...");
+        var recreated = await recreator.RecreateAsync(def, cancellationToken);
+        if (recreated is null)
+        {
+            FileLog($"AUTO-RECOVERY FAIL para sub label={def.Label}. Intervencion manual requerida.");
+            _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+                $"AUTO-RECOVERY FAIL para sub label={def.Label} - intervencion manual requerida");
+            return;
+        }
+
+        def.Id = recreated.NewId;
+        await stateStore.SaveAsync(_options.Subscriptions, cancellationToken);
+        FileLog($"AUTO-RECOVERY OK label={def.Label} oldId={deadSubId} newId={recreated.NewId} expira={recreated.ExpirationDateTime:o}");
+        _alerts.Record(AlertCategory.SubscriptionRenewalFailures,
+            $"AUTO-RECOVERY de sub label={recreated.Label}: oldId={deadSubId}, NEW id={recreated.NewId}. State persistido a disco - User Secrets puede actualizarse al ocio.");
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";
