@@ -92,6 +92,19 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
                       ?? Path.Combine(Path.GetTempPath(), "webhook-handler", "sessions");
         Directory.CreateDirectory(flagDir);
         var flagFile = Path.Combine(flagDir, $"{sessionId}.touch");
+
+        // Rotacion automatica del .jsonl si supero el threshold de bloat
+        // (BloatThresholdMb en ClaudeOptions, default 1.5 MB). Esto evita el
+        // problema operacional vivido el 27-05: a medida que el .jsonl crece,
+        // el RESUME tarda > TimeoutSeconds y todo turn empieza a fallar en
+        // cascada. La rotacion mueve el .jsonl gordo a _archived-sessions/
+        // y borra el .touch para que el proximo turn arranque como NEW limpio.
+        if (_options.BloatThresholdMb > 0)
+        {
+            try { RotateIfBloated(sessionId, flagFile); }
+            catch (Exception ex) { FileLog($"ROTATE FAIL chat={chatId}: {ex.Message}"); }
+        }
+
         var isResume = File.Exists(flagFile);
 
         FileLog($"INVOKE chat={chatId} session={sessionId} {(isResume ? "RESUME" : "NEW")} promptLen={userPrompt.Length}");
@@ -226,6 +239,36 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";
+
+    // Busca el .jsonl de la sesion en {ClaudeHome}/.claude/projects/**/{sessionId}.jsonl.
+    // Si supera BloatThresholdMb, lo mueve a _archived-sessions/ con timestamp y borra
+    // el .touch asociado. Proximo turn arrancara como NEW con sesion fresca y rapida.
+    // Falla silenciosa: si no puede rotar (permisos, archivo lockeado), log y sigue.
+    private void RotateIfBloated(string sessionId, string flagFile)
+    {
+        var projectsRoot = Path.Combine(_options.ClaudeHome, ".claude", "projects");
+        if (!Directory.Exists(projectsRoot)) return;
+
+        var jsonlPath = Directory
+            .EnumerateFiles(projectsRoot, $"{sessionId}.jsonl", SearchOption.AllDirectories)
+            .FirstOrDefault();
+        if (jsonlPath is null) return;
+
+        var sizeBytes = new FileInfo(jsonlPath).Length;
+        var thresholdBytes = (long)(_options.BloatThresholdMb * 1024 * 1024);
+        if (sizeBytes < thresholdBytes) return;
+
+        var archiveDir = Path.Combine(_options.ClaudeHome, ".claude", "_archived-sessions");
+        Directory.CreateDirectory(archiveDir);
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var archivePath = Path.Combine(archiveDir, $"{sessionId}-{stamp}-autorotate.jsonl");
+
+        File.Move(jsonlPath, archivePath);
+        if (File.Exists(flagFile)) File.Delete(flagFile);
+
+        var sizeMb = sizeBytes / 1024.0 / 1024.0;
+        FileLog($"ROTATE OK session={sessionId} size={sizeMb:0.00}MB > threshold={_options.BloatThresholdMb}MB -> archived to {archivePath}");
+    }
 
         private static void FileLog(string message) => Phipes.Assistant.WebhookHandler.Utilities.FileLogger.Write("Claude", message);
 

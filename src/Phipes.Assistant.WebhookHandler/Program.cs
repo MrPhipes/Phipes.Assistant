@@ -63,6 +63,14 @@ builder.Services.AddOptions<WaNotifierOptions>()
     .Bind(builder.Configuration.GetSection(WaNotifierOptions.SectionName))
     .ValidateOnStart();
 
+// PhipesAssistantOptions: connection string a la DB local (PhipesAssistant) + API key
+// para los endpoints REST /api/context y /api/sessions. Connection string es Required;
+// ApiKey puede venir vacio y en ese caso los endpoints rechazan TODO (fail-closed).
+builder.Services.AddOptions<PhipesAssistantOptions>()
+    .Bind(builder.Configuration.GetSection(PhipesAssistantOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
@@ -74,6 +82,7 @@ builder.Services.AddHttpClient<IJwtNotificationValidator, JwtNotificationValidat
 });
 builder.Services.AddSingleton<INotificationDecrypter, NotificationDecrypter>();
 builder.Services.AddSingleton<IClaudeCodeInvoker, ClaudeCodeInvoker>();
+builder.Services.AddSingleton<IProjectContextService, ProjectContextService>();
 builder.Services.AddHttpClient<IWebhookAppTokenProvider, WebhookAppTokenProvider>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(15);
@@ -412,6 +421,89 @@ app.MapPost("/webhook/teams/lifecycle", async (
     }
 
     return Results.Accepted();
+});
+
+// =====================================================================
+// Endpoints REST /api/context y /api/sessions — acceso cross-PC a la DB
+// PhipesAssistant para skills /contexto y /cerrar-sesion. Auth via header
+// X-Api-Key contra PhipesAssistantOptions.ApiKey (fail-closed si vacio).
+// =====================================================================
+
+// Helper local de auth: chequea X-Api-Key contra config. Devuelve null si OK,
+// IResult con 401 si falla.
+static IResult? CheckApiKey(HttpRequest req, IOptions<PhipesAssistantOptions> opts)
+{
+    var expected = opts.Value.ApiKey;
+    if (string.IsNullOrEmpty(expected))
+    {
+        FileLog("API auth FAIL: ApiKey no configurada (fail-closed)");
+        return Results.Unauthorized();
+    }
+    if (!req.Headers.TryGetValue("X-Api-Key", out var got) || got != expected)
+    {
+        FileLog($"API auth FAIL: X-Api-Key invalida o ausente desde {req.HttpContext.Connection.RemoteIpAddress}");
+        return Results.Unauthorized();
+    }
+    return null;
+}
+
+// GET /api/context/{slug} - lee ProjectContext del slug
+app.MapGet("/api/context/{slug}", async (
+    string slug,
+    HttpRequest req,
+    IOptions<PhipesAssistantOptions> opts,
+    IProjectContextService svc,
+    CancellationToken ct) =>
+{
+    var authFail = CheckApiKey(req, opts);
+    if (authFail is not null) return authFail;
+
+    var ctx = await svc.GetAsync(slug, ct);
+    if (ctx is null) return Results.NotFound(new { error = "ProjectContext no encontrado", slug });
+    return Results.Ok(ctx);
+});
+
+// POST /api/context/{slug} - UPSERT del ProjectContext
+app.MapPost("/api/context/{slug}", async (
+    string slug,
+    HttpRequest req,
+    IOptions<PhipesAssistantOptions> opts,
+    IProjectContextService svc,
+    [FromBody] ProjectContextUpsertDto dto,
+    CancellationToken ct) =>
+{
+    var authFail = CheckApiKey(req, opts);
+    if (authFail is not null) return authFail;
+
+    await svc.UpsertAsync(slug, dto, ct);
+    var ctx = await svc.GetAsync(slug, ct);
+    return Results.Ok(ctx);
+});
+
+// POST /api/sessions - cierra una sesion y la persiste
+app.MapPost("/api/sessions", async (
+    HttpRequest req,
+    IOptions<PhipesAssistantOptions> opts,
+    IProjectContextService svc,
+    [FromBody] SessionCloseDto dto,
+    CancellationToken ct) =>
+{
+    var authFail = CheckApiKey(req, opts);
+    if (authFail is not null) return authFail;
+
+    try
+    {
+        if (dto is null) { FileLog("POST sessions FAIL: dto null"); return Results.BadRequest(new { error = "body vacio o no parseable" }); }
+        FileLog($"POST sessions IN: host={dto.HostName} project={dto.Project} summary.Length={dto.Summary?.Length}");
+        var sessionId = await svc.CloseSessionAsync(dto, ct);
+        FileLog($"POST sessions OK: session_id={sessionId}");
+        return Results.Ok(new { session_id = sessionId, host = dto.HostName, project = dto.Project });
+    }
+    catch (Exception ex)
+    {
+        FileLog($"POST sessions EXC: {ex.GetType().Name}: {ex.Message}{System.Environment.NewLine}{ex.StackTrace}");
+        return Results.Problem(detail: ex.Message, statusCode: 500, title: ex.GetType().Name);
+    }
 });
 
 app.Run();
