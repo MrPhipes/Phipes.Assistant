@@ -107,6 +107,33 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         var isResume = File.Exists(flagFile);
 
+        try
+        {
+            return await ExecuteTurnAsync(chatId, sessionId, userPrompt, isResume, flagFile, cancellationToken);
+        }
+        catch (InvalidOperationException ex) when (
+            ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("No conversation found", StringComparison.OrdinalIgnoreCase))
+        {
+            // El flag file quedo desincronizado del .jsonl real: jsonl existe pero touch
+            // no -> NEW choca con "already in use"; o touch existe sin jsonl -> RESUME
+            // tira "No conversation found". Antes esto abortaba el turno y el mensaje se
+            // perdia en silencio (caso mail de Daniel Canales, 2026-05-29). Ahora:
+            // sincronizar el flag con la realidad y reintentar una vez en el modo opuesto.
+            var retryResume = ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase);
+            FileLog($"SESSION MISMATCH chat={chatId} session={sessionId}: reintento como {(retryResume ? "RESUME" : "NEW")}");
+            try
+            {
+                if (retryResume) File.WriteAllText(flagFile, DateTime.UtcNow.ToString("o"));
+                else if (File.Exists(flagFile)) File.Delete(flagFile);
+            }
+            catch { }
+            return await ExecuteTurnAsync(chatId, sessionId, userPrompt, retryResume, flagFile, cancellationToken);
+        }
+    }
+
+    private async Task<string> ExecuteTurnAsync(string chatId, string sessionId, string userPrompt, bool isResume, string flagFile, CancellationToken cancellationToken)
+    {
         FileLog($"INVOKE chat={chatId} session={sessionId} {(isResume ? "RESUME" : "NEW")} promptLen={userPrompt.Length}");
 
         var args = new List<string> { "--print" };
