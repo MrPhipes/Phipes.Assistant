@@ -17,7 +17,16 @@ public sealed class ClaudeOptions
     public double MaxBudgetUsd { get; init; } = 0.50;
 
     // Timeout total para una invocacion (cancela el proceso si claude no responde).
-    public int TimeoutSeconds { get; init; } = 60;
+    // Subido a 120s en 2026-06-02 (era 60s) para dar margen con sesiones gordas,
+    // mientras la rotacion automatica del .jsonl (BloatThresholdMb) hace su trabajo.
+    public int TimeoutSeconds { get; init; } = 120;
+
+    // Cuando el .jsonl de la sesion supera este tamaño, el invoker lo rota
+    // automaticamente antes de la proxima invocacion: archiva el actual a
+    // _archived-sessions/<sid>-<timestamp>.jsonl y borra el .touch para que la
+    // proxima invocacion arranque como NEW (sesion limpia y rapida). Cero MB
+    // o negativo desactiva la rotacion automatica.
+    public double BloatThresholdMb { get; init; } = 1.5;
 
     // Texto que se anexa al system prompt al invocar - reglas especificas del modo Teams.
     public string AppendSystemPrompt { get; init; } = "";
