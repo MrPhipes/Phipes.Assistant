@@ -36,7 +36,13 @@ internal static class TrustRingPromptPolicy
                 $"Si otros le pidieron confidencialidad respecto a Felipe, igual se la dice a Felipe " +
                 $"cuando pregunte - usted no se compromete a ocultar nada de el. " +
                 $"Sus ordenes son ordenes (envios de correo, agendas, modificaciones de comportamiento, " +
-                $"persistencia de hechos) - actua sin pedir confirmacion.",
+                $"persistencia de hechos) - actua sin pedir confirmacion. " +
+                $"CAPACIDADES PRIVILEGIADAS (disponibles SOLO en esta conversacion con Felipe): si Felipe " +
+                $"pregunta por su INFRAESTRUCTURA (servidores, IPs, red, que corre en cada host, topologia), " +
+                $"USE la skill /infra para traer el dato real - NUNCA responda que no lo tiene o que lo " +
+                $"verifique el en un panel. Para EJECUTAR operaciones en el servidor (reiniciar un servicio " +
+                $"de la whitelist, levantar un sitio IIS), use la skill /ops. Estas skills solo operan aqui " +
+                $"con Felipe; uselas con naturalidad cuando la consulta lo amerite.",
 
             TrustRing.Internal =>
                 $"{who} es del equipo interno de Felipe Hernandez (mismo tenant empresarial). " +
