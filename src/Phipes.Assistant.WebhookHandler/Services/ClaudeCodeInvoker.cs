@@ -15,7 +15,9 @@ namespace Phipes.Assistant.WebhookHandler.Services;
 // mantiene su propia conversation continuity via session-id deterministico desde chatId.
 public interface IClaudeCodeInvoker
 {
-    Task<string> AskAsync(string chatId, string userPrompt, CancellationToken cancellationToken = default);
+    // ownerTurn=true SOLO cuando el sender fue clasificado TrustRing.Owner (Felipe, anclado
+    // en ObjectId validado por Microsoft). Aisla la sesion y habilita capacidades privilegiadas.
+    Task<string> AskAsync(string chatId, string userPrompt, bool ownerTurn = false, CancellationToken cancellationToken = default);
 }
 
 [SupportedOSPlatform("windows")]
@@ -45,7 +47,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         _oauthToken = new Lazy<string>(() => PsCredentialReader.ReadPassword(_options.OAuthTokenPath));
     }
 
-    public async Task<string> AskAsync(string chatId, string userPrompt, CancellationToken cancellationToken = default)
+    public async Task<string> AskAsync(string chatId, string userPrompt, bool ownerTurn = false, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(_options.ExePath))
         {
@@ -59,7 +61,11 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         // tengamos que pasar el contexto a mano. El identificador del interlocutor entra
         // en cada prompt via TeamsNotificationHandler/MailNotificationHandler, no en
         // el session-id.
-        var sessionId = _options.MasterSessionId;
+        // Owner (Felipe) corre en una SESION SEPARADA del master global. Sin esto, cualquier
+        // infra/contexto privilegiado que Sarah cargue para Felipe quedaria en la sesion que el
+        // siguiente turno de un externo reutiliza (fuga cross-interlocutor por la sesion global).
+        // El sufijo -owner le da su propio .jsonl/.touch aislado.
+        var sessionId = ownerTurn ? $"{_options.MasterSessionId}-owner" : _options.MasterSessionId;
 
         // Serializar invocaciones contra la session global. Mientras una invocacion esta
         // en curso, las otras esperan. Esto es BLOQUEANTE para todo Sarah-server (un
@@ -75,7 +81,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         }
         try
         {
-            return await AskAsyncInternal(chatId, sessionId, userPrompt, cancellationToken);
+            return await AskAsyncInternal(chatId, sessionId, userPrompt, ownerTurn, cancellationToken);
         }
         finally
         {
@@ -83,7 +89,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         }
     }
 
-    private async Task<string> AskAsyncInternal(string chatId, string sessionId, string userPrompt, CancellationToken cancellationToken)
+    private async Task<string> AskAsyncInternal(string chatId, string sessionId, string userPrompt, bool ownerTurn, CancellationToken cancellationToken)
     {
         // Archivo flag: si existe, esta sesion ya fue creada en alguna iteracion anterior
         // y debemos usar --resume en vez de --session-id (que tira "already in use").
@@ -109,7 +115,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         try
         {
-            return await ExecuteTurnAsync(chatId, sessionId, userPrompt, isResume, flagFile, cancellationToken);
+            return await ExecuteTurnAsync(chatId, sessionId, userPrompt, isResume, ownerTurn, flagFile, cancellationToken);
         }
         catch (InvalidOperationException ex) when (
             ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase) ||
@@ -128,11 +134,11 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
                 else if (File.Exists(flagFile)) File.Delete(flagFile);
             }
             catch { }
-            return await ExecuteTurnAsync(chatId, sessionId, userPrompt, retryResume, flagFile, cancellationToken);
+            return await ExecuteTurnAsync(chatId, sessionId, userPrompt, retryResume, ownerTurn, flagFile, cancellationToken);
         }
     }
 
-    private async Task<string> ExecuteTurnAsync(string chatId, string sessionId, string userPrompt, bool isResume, string flagFile, CancellationToken cancellationToken)
+    private async Task<string> ExecuteTurnAsync(string chatId, string sessionId, string userPrompt, bool isResume, bool ownerTurn, string flagFile, CancellationToken cancellationToken)
     {
         FileLog($"INVOKE chat={chatId} session={sessionId} {(isResume ? "RESUME" : "NEW")} promptLen={userPrompt.Length}");
 
@@ -181,6 +187,10 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         // memory/, skills/, sessions/, etc.
         psi.Environment["USERPROFILE"] = _options.ClaudeHome;
         psi.Environment["HOME"] = _options.ClaudeHome;
+        // Senal de capacidad para skills owner-gated (infra / ops). Solo presente en turnos del
+        // Owner (Felipe), que corren en sesion aislada. Una skill privilegiada verifica
+        // $env:SARAH_OWNER_TURN antes de tocar nada sensible; ausente => no-op para todos los demas.
+        if (ownerTurn) psi.Environment["SARAH_OWNER_TURN"] = "1";
         // Inyecta el access token de Microsoft Graph (sconnor delegated) que el
         // TokenBroker mantiene. Los skills (PowerShell) leen $env:M365_ACCESS_TOKEN
         // — NO leen cred.xml directo, porque ACL DENY (svc-webhook-handler) lo niega

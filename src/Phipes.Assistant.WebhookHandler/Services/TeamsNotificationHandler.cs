@@ -267,7 +267,9 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
         // re-pingea mas tarde. Una respuesta robotica "recibi su mensaje y le respondo
         // en cuanto pueda" delata la naturaleza no-humana y rompe la regla inviolable
         // de no revelar AI.
-        var reply = await _claude.AskAsync(chatId, prompt, cancellationToken);
+        // ownerTurn solo si el sender es Owner (Felipe, anclado en ObjectId validado). Habilita
+        // sesion aislada + capacidades privilegiadas; cualquier otro ring corre walled como siempre.
+        var reply = await _claude.AskAsync(chatId, prompt, ownerTurn: ring == TrustRing.Owner, cancellationToken);
         _logger.LogInformation("Claude respondio a {Sender} (chat {ChatId}) con {Len} chars", sender, chatId, reply.Length);
         return reply;
     }
