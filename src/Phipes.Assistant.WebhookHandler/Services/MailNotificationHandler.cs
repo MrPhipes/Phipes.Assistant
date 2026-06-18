@@ -196,7 +196,9 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
         string claudeOutput;
         try
         {
-            claudeOutput = await _claude.AskAsync(sessionKey, prompt, cancellationToken);
+            // Mail nunca es ownerTurn: el classifier no tiene ObjectId firmado por mail (From
+            // es falsificable), asi que el camino privilegiado queda restringido a Teams a proposito.
+            claudeOutput = await _claude.AskAsync(sessionKey, prompt, ownerTurn: false, cancellationToken);
         }
         catch (Exception ex)
         {
