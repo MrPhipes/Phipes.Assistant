@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>phipes-assistant-opsbroker</UserSecretsId>
+    <RootNamespace>Phipes.Assistant.OpsBroker</RootNamespace>
+    <AssemblyName>Phipes.Assistant.OpsBroker</AssemblyName>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Hosting como Windows Service bajo svc-sarah-ops. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
+    <!-- Consulta del grafo de infra en PhipesAssistant_Felipe (Integrated Security = svc-sarah-ops). -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.1" />
+  </ItemGroup>
+
+</Project>
