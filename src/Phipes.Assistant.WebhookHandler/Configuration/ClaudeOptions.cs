@@ -41,4 +41,14 @@ public sealed class ClaudeOptions
     // antes hablo con Katerin sobre la misma coordinacion. Si en algun futuro se
     // operara multi-tenant, cambia el sufijo por tenant (ej "sarah-dimaco-master").
     public string MasterSessionId { get; init; } = "sarah-server-master";
+
+    // URL del Ops Broker privilegiado (svc-sarah-ops). Solo se inyecta a claude.exe en
+    // turnos del Owner (env var SARAH_OPS_BROKER_URL) para que las skills owner-gated
+    // sepan a donde pegar. Vacio = capacidad ops deshabilitada.
+    public string OpsBrokerUrl { get; init; } = "http://127.0.0.1:5060";
+
+    // Clave HMAC compartida con el Ops Broker. El handler firma con ella el token efimero
+    // que prueba "turno Owner autenticado". DEBE coincidir con OpsBroker:SharedHmacKey.
+    // Vive en User Secrets, nunca en el repo.
+    public string OpsBrokerHmacKey { get; init; } = "";
 }

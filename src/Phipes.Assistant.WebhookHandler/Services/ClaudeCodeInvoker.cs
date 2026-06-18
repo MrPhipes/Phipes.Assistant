@@ -190,7 +190,18 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         // Senal de capacidad para skills owner-gated (infra / ops). Solo presente en turnos del
         // Owner (Felipe), que corren en sesion aislada. Una skill privilegiada verifica
         // $env:SARAH_OWNER_TURN antes de tocar nada sensible; ausente => no-op para todos los demas.
-        if (ownerTurn) psi.Environment["SARAH_OWNER_TURN"] = "1";
+        if (ownerTurn)
+        {
+            psi.Environment["SARAH_OWNER_TURN"] = "1";
+            // Token efimero firmado: prueba criptografica de "turno Owner autenticado" para el
+            // Ops Broker. Sin la clave HMAC compartida no se puede forjar. El broker valida
+            // firma + expiracion. Es el segundo gate (el primero es SARAH_OWNER_TURN en la skill).
+            if (!string.IsNullOrEmpty(_options.OpsBrokerHmacKey) && !string.IsNullOrEmpty(_options.OpsBrokerUrl))
+            {
+                psi.Environment["SARAH_OPS_BROKER_URL"] = _options.OpsBrokerUrl;
+                psi.Environment["SARAH_OPS_TOKEN"] = MintOpsToken(_options.OpsBrokerHmacKey);
+            }
+        }
         // Inyecta el access token de Microsoft Graph (sconnor delegated) que el
         // TokenBroker mantiene. Los skills (PowerShell) leen $env:M365_ACCESS_TOKEN
         // — NO leen cred.xml directo, porque ACL DENY (svc-webhook-handler) lo niega
@@ -273,6 +284,19 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         FileLog($"OK chat={chatId} session={sessionId} elapsed={sw.Elapsed.TotalSeconds:0.0}s cost=${parsed.TotalCostUsd:0.0000} resultLen={parsed.Result.Length}");
         return parsed.Result.Trim();
+    }
+
+    // Firma un token efimero para el Ops Broker: "{expUnix}.{base64url(HMACSHA256(key, expUnix))}".
+    // El broker recomputa la firma con la misma clave y valida la expiracion. Ventana corta
+    // (~3 min): suficiente para el turno, minimiza replay (loopback only de por si).
+    private static string MintOpsToken(string hmacKey)
+    {
+        var exp = DateTimeOffset.UtcNow.AddSeconds(180).ToUnixTimeSeconds().ToString();
+        var sig = System.Security.Cryptography.HMACSHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(hmacKey),
+            System.Text.Encoding.UTF8.GetBytes(exp));
+        var sig64 = Convert.ToBase64String(sig).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return $"{exp}.{sig64}";
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";
