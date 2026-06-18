@@ -64,8 +64,9 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         // Owner (Felipe) corre en una SESION SEPARADA del master global. Sin esto, cualquier
         // infra/contexto privilegiado que Sarah cargue para Felipe quedaria en la sesion que el
         // siguiente turno de un externo reutiliza (fuga cross-interlocutor por la sesion global).
-        // El sufijo -owner le da su propio .jsonl/.touch aislado.
-        var sessionId = ownerTurn ? $"{_options.MasterSessionId}-owner" : _options.MasterSessionId;
+        // El id del owner debe ser un UUID valido (claude.exe lo exige) y estable entre turnos:
+        // lo derivamos deterministicamente del master, no con un sufijo (que rompe el UUID).
+        var sessionId = ownerTurn ? DeriveOwnerSessionId(_options.MasterSessionId) : _options.MasterSessionId;
 
         // Serializar invocaciones contra la session global. Mientras una invocacion esta
         // en curso, las otras esperan. Esto es BLOQUEANTE para todo Sarah-server (un
@@ -284,6 +285,15 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         FileLog($"OK chat={chatId} session={sessionId} elapsed={sw.Elapsed.TotalSeconds:0.0}s cost=${parsed.TotalCostUsd:0.0000} resultLen={parsed.Result.Length}");
         return parsed.Result.Trim();
+    }
+
+    // Deriva un UUID valido y estable para la sesion del Owner a partir del master. claude.exe
+    // exige que --session-id sea un UUID; un sufijo como "-owner" lo invalida. MD5 da 16 bytes
+    // -> Guid valido, deterministico (misma sesion entre turnos), distinto del master.
+    private static string DeriveOwnerSessionId(string master)
+    {
+        var hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(master + "-owner"));
+        return new Guid(hash).ToString();
     }
 
     // Firma un token efimero para el Ops Broker: "{expUnix}.{base64url(HMACSHA256(key, expUnix))}".
