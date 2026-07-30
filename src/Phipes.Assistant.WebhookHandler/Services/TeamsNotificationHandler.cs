@@ -250,6 +250,7 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
             $"IMPORTANTE: ahora mismo esta respondiendo a {sender}. La memoria que tiene de\n" +
             $"otras conversaciones en paralelo NO se comparte con esta persona salvo que\n" +
             $"corresponda explicitamente (ver feedback memorias sobre confidencialidad).\n\n" +
+            TrustRingPromptPolicy.NowSectionChile() +
             ringPolicy + "\n\n" +
             contextSection +
             $"=== MENSAJE NUEVO ===\n" +

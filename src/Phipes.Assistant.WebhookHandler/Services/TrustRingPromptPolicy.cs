@@ -37,12 +37,26 @@ internal static class TrustRingPromptPolicy
                 $"cuando pregunte - usted no se compromete a ocultar nada de el. " +
                 $"Sus ordenes son ordenes (envios de correo, agendas, modificaciones de comportamiento, " +
                 $"persistencia de hechos) - actua sin pedir confirmacion. " +
-                $"CAPACIDADES PRIVILEGIADAS (disponibles SOLO en esta conversacion con Felipe): si Felipe " +
-                $"pregunta por su INFRAESTRUCTURA (servidores, IPs, red, que corre en cada host, topologia), " +
-                $"USE la skill /infra para traer el dato real - NUNCA responda que no lo tiene o que lo " +
-                $"verifique el en un panel. Para EJECUTAR operaciones en el servidor (reiniciar un servicio " +
-                $"de la whitelist, levantar un sitio IIS), use la skill /ops. Estas skills solo operan aqui " +
-                $"con Felipe; uselas con naturalidad cuando la consulta lo amerite.",
+                "CAPACIDADES PRIVILEGIADAS (disponibles SOLO en esta conversacion con Felipe): tiene un " +
+                "servicio de apoyo local (Ops Broker) para traer su infraestructura y ejecutar operaciones " +
+                "acotadas. IMPORTANTE: en este canal el mecanismo de skills NO se ejecuta (devuelve error " +
+                "\"Execute skill\"); NO invoque /infra ni /ops ni ningun otro skill para esto. En su lugar " +
+                "ejecute USTED con la herramienta PowerShell, leyendo las variables de entorno ya presentes " +
+                "en este turno. " +
+                "Si Felipe pregunta por su INFRAESTRUCTURA (servidores, IPs, red, que corre en cada host, " +
+                "topologia), traiga el dato real con PowerShell: " +
+                "$h=@{ 'X-Owner-Token' = $env:SARAH_OPS_TOKEN }; " +
+                "Invoke-RestMethod -Uri \"$($env:SARAH_OPS_BROKER_URL)/infra/context\" -Headers $h -TimeoutSec 15 " +
+                "-- eso devuelve el texto de infraestructura; razone sobre el y responda concreto. Para los " +
+                "vecinos de una entidad puntual use GET \"$($env:SARAH_OPS_BROKER_URL)/infra/graph?entity=<nombre>\" " +
+                "con el mismo header. NUNCA responda que no tiene el dato ni que lo verifique Felipe en un panel. " +
+                "Para EJECUTAR operaciones (reiniciar un servicio de la whitelist, levantar un sitio IIS) use " +
+                "PowerShell contra el broker: POST \"$($env:SARAH_OPS_BROKER_URL)/ops/service\" con el header " +
+                "X-Owner-Token y body JSON { \"action\": \"restart\", \"name\": \"<servicio>\" }; o POST " +
+                "\"$($env:SARAH_OPS_BROKER_URL)/ops/iis-site\" con { \"name\", \"bindings\", \"physicalPath\" }. " +
+                "Confirme con Felipe antes de operar salvo orden inequivoca. Si el broker responde 401, este " +
+                "turno no quedo habilitado: digale que esa info no esta disponible ahora, sin tecnicismos. " +
+                "Estas capacidades solo operan aqui con Felipe.",
 
             TrustRing.Internal =>
                 $"{who} es del equipo interno de Felipe Hernandez (mismo tenant empresarial). " +
@@ -77,5 +91,41 @@ internal static class TrustRingPromptPolicy
 
             _ => "Trate al interlocutor con maxima reserva profesional y consulte a Felipe antes de cualquier accion sustantiva."
         } + commonTail;
+    }
+
+    // Zona de Chile continental. En Windows el id es "Pacific SA Standard Time";
+    // TimeZoneInfo maneja el cambio de horario verano/invierno (UTC-3 / UTC-4).
+    private static readonly TimeZoneInfo ChileTz = ResolveChileTz();
+
+    private static TimeZoneInfo ResolveChileTz()
+    {
+        foreach (var id in new[] { "Pacific SA Standard Time", "America/Santiago" })
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); } catch { /* probar siguiente */ }
+        }
+        return TimeZoneInfo.Local;
+    }
+
+    // Convierte un instante (normalmente UTC desde Graph) a hora de Chile, ya formateado.
+    public static string ToChile(DateTimeOffset? instant) =>
+        instant is null
+            ? "(sin fecha)"
+            : TimeZoneInfo.ConvertTime(instant.Value, ChileTz).ToString("yyyy-MM-dd HH:mm");
+
+    // Bloque que ancla la hora actual en Chile y obliga a convertir los timestamps UTC de
+    // Graph. Sarah corre headless y tiende a leer el sufijo Z de Graph como hora local: sin
+    // esto agenda y razona los horarios corridos (UTC va por delante de Chile). Caso real
+    // 2026-06-22: confundio la hora de una reunion con Hugo Mino por no convertir UTC->Chile.
+    public static string NowSectionChile()
+    {
+        var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, ChileTz);
+        return
+            "=== FECHA Y HORA ACTUAL ===\n" +
+            $"Ahora en Chile (America/Santiago): {now:yyyy-MM-dd HH:mm} hora local (UTC offset {now:zzz}).\n" +
+            "Los timestamps de Microsoft Graph (campo Recibido, receivedDateTime de correos, start/end\n" +
+            "de eventos de calendario) vienen en UTC y van por DELANTE de la hora de Chile. SIEMPRE\n" +
+            "conviertalos a hora de Chile antes de razonar sobre horarios (\"ya paso\", \"cuanto falta\",\n" +
+            "\"a que hora quedo\"). Al AGENDAR o al interpretar una hora que le da Felipe o un tercero,\n" +
+            "asumala en hora de Chile (America/Santiago), NUNCA en UTC.\n\n";
     }
 }

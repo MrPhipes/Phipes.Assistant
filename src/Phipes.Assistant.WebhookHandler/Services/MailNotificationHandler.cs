@@ -169,11 +169,12 @@ public sealed class MailNotificationHandler : IMailNotificationHandler
             $"Canal: correo electronico (dirigido directamente a usted como destinataria principal)\n" +
             $"De: {fromName} <{fromAddr}>\n" +
             $"Asunto: {message.Subject ?? "(sin asunto)"}\n" +
-            $"Recibido: {message.ReceivedDateTime:yyyy-MM-dd HH:mm}\n\n" +
+            $"Recibido: {TrustRingPromptPolicy.ToChile(message.ReceivedDateTime)} (hora de Chile)\n\n" +
             $"IMPORTANTE: ahora mismo evalua un correo de {fromName}. Sarah opera con una\n" +
             $"unica session global y multiples interlocutores en paralelo - aplica disciplina\n" +
             $"de confidencialidad: lo que otros interlocutores le dijeron NO se comparte aqui\n" +
             $"salvo que corresponda explicitamente.\n\n" +
+            TrustRingPromptPolicy.NowSectionChile() +
             ringPolicy + "\n\n" +
             contextSection +
             $"=== CUERPO ===\n" +
