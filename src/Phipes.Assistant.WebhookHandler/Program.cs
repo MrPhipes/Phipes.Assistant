@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
@@ -72,6 +73,11 @@ builder.Services.AddOptions<PhipesAssistantOptions>()
     .ValidateOnStart();
 
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
+
+// M365Relay: endpoint /api/m365-token para la consola (Sarah-fhernandez). ApiKey vacia
+// => fail-closed (endpoint deshabilitado). No usa ValidateOnStart para no romper el
+// arranque si aun no se ha provisto la key (migracion gradual).
+builder.Services.Configure<M365RelayOptions>(builder.Configuration.GetSection(M365RelayOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
 builder.Services.AddSingleton<IWorkingMemoryReader, SqlWorkingMemoryReader>();
@@ -503,6 +509,58 @@ app.MapPost("/api/sessions", async (
     {
         FileLog($"POST sessions EXC: {ex.GetType().Name}: {ex.Message}{System.Environment.NewLine}{ex.StackTrace}");
         return Results.Problem(detail: ex.Message, statusCode: 500, title: ex.GetType().Name);
+    }
+});
+
+// =====================================================================
+// GET /api/m365-token — relay owner-gated del access token de Graph para la
+// CONSOLA (Sarah-fhernandez en casa/oficina). El refresh token NUNCA sale del
+// servidor: lo rota el TokenBroker; aca solo devolvemos un access token corto
+// que obtenemos via IGraphTokenProvider (que en produccion habla con el broker).
+// Esto hace al broker el UNICO rotador del RT -> la carrera del 2026-05-19 es
+// estructuralmente imposible. Auth: X-Api-Key dedicada + allowlist de IP LAN.
+// Fail-closed: si M365Relay:ApiKey esta vacio, rechaza todo.
+// =====================================================================
+app.MapGet("/api/m365-token", async (
+    HttpRequest req,
+    IOptions<M365RelayOptions> relayOpts,
+    IGraphTokenProvider tokenProvider,
+    CancellationToken ct) =>
+{
+    var o = relayOpts.Value;
+    var remoteIp = req.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
+
+    if (string.IsNullOrEmpty(o.ApiKey))
+    {
+        FileLog("M365Relay FAIL: ApiKey no configurada (fail-closed)");
+        return Results.Unauthorized();
+    }
+
+    if (o.AllowedSourcePrefixes.Length > 0 &&
+        !o.AllowedSourcePrefixes.Any(p => remoteIp.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+    {
+        FileLog($"M365Relay FAIL: origen {remoteIp} fuera de allowlist");
+        return Results.Unauthorized();
+    }
+
+    var got = req.Headers.TryGetValue("X-Api-Key", out var hdr) ? hdr.ToString() : "";
+    if (!CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(got), Encoding.UTF8.GetBytes(o.ApiKey)))
+    {
+        FileLog($"M365Relay FAIL: X-Api-Key invalida o ausente desde {remoteIp}");
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var at = await tokenProvider.GetAccessTokenAsync(ct);
+        FileLog($"M365Relay OK: AT entregado a {remoteIp}");
+        return Results.Json(new { access_token = at });
+    }
+    catch (Exception ex)
+    {
+        FileLog($"M365Relay EXC: {ex.Message}");
+        return Results.Json(new { error = ex.Message }, statusCode: 503);
     }
 });
 
