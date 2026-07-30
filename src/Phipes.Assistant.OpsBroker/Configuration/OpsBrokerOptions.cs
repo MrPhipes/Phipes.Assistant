@@ -34,4 +34,12 @@ public sealed class OpsBrokerOptions
     // Raíz física bajo la cual el broker puede crear sitios IIS. Un physicalPath fuera
     // de esta raíz se rechaza. Vacío = creación de sitios IIS deshabilitada.
     public string AllowedSiteRoot { get; set; } = "";
+
+    // NAS (TrueNAS) — para servir el ESTADO de las apps Docker a turnos del Owner sin que
+    // Sarah-server toque el vault. La URL base no es secreta (va en appsettings); el token
+    // SÍ es secreto y vive en User Secrets del broker (perfil svc-sarah-ops). El broker lo
+    // usa internamente y nunca lo devuelve: el endpoint /ops/nas-status retorna solo estado.
+    // Vacío = consulta de estado del NAS deshabilitada.
+    public string NasBaseUrl { get; set; } = "";
+    public string NasApiToken { get; set; } = "";
 }
