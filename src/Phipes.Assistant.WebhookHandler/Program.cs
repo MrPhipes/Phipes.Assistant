@@ -64,6 +64,12 @@ builder.Services.AddOptions<WaNotifierOptions>()
     .Bind(builder.Configuration.GetSection(WaNotifierOptions.SectionName))
     .ValidateOnStart();
 
+// MetaNotifier (moderacion Facebook/Instagram): mismo trato que WaNotifier — opcional,
+// Enabled=false por default, sin [Required].
+builder.Services.AddOptions<MetaNotifierOptions>()
+    .Bind(builder.Configuration.GetSection(MetaNotifierOptions.SectionName))
+    .ValidateOnStart();
+
 // PhipesAssistantOptions: connection string a la DB local (PhipesAssistant) + API key
 // para los endpoints REST /api/context y /api/sessions. Connection string es Required;
 // ApiKey puede venir vacio y en ese caso los endpoints rechazan TODO (fail-closed).
@@ -177,6 +183,12 @@ builder.Services.AddSingleton<IAlertManager, AlertManager>();
 // arranca pero no arma el timer (no-op).
 builder.Services.AddHttpClient("wanotifier", c => c.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddHostedService<WaProactiveNotifier>();
+
+// MetaProactiveNotifier (moderacion de comentarios FB/IG de la plataforma MetaSocial):
+// vigila PacificDevMeta.dbo.WebhookEvents y avisa a Felipe por Teams con el menu de
+// acciones; la ejecucion de la instruccion la hace la skill /meta-comentario de Sarah.
+builder.Services.AddHttpClient("metanotifier", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddHostedService<MetaProactiveNotifier>();
 
 var app = builder.Build();
 
