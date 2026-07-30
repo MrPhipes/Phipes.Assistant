@@ -32,6 +32,7 @@ public static class Program
         builder.Services.AddSingleton<OwnerTokenValidator>();
         builder.Services.AddSingleton<InfraReader>();
         builder.Services.AddSingleton<OpsExecutor>();
+        builder.Services.AddSingleton<NasReader>();
         builder.Services.AddWindowsService(o => o.ServiceName = "Phipes.Assistant.OpsBroker");
 
         var listenUrl = builder.Configuration["OpsBroker:ListenUrl"] ?? "http://127.0.0.1:5060";
@@ -82,6 +83,20 @@ public static class Program
         {
             var r = ops.CreateIisSite(req.Name ?? "", req.Bindings ?? "", req.PhysicalPath ?? "");
             return Results.Json(r, statusCode: r.Success ? 200 : 400);
+        });
+
+        // GET /ops/nas-status → estado REAL de las apps Docker del NAS (Vaultwarden, CRM,
+        // WordPress/WooCommerce, Plausible). El broker consulta el NAS con su token interno
+        // y devuelve SOLO nombre+estado — nunca la credencial. Asi Sarah-server responde a
+        // Felipe con dato verificado en vez de inventarlo.
+        app.MapGet("/ops/nas-status", async (NasReader nas, CancellationToken ct) =>
+        {
+            try { return Results.Json(new { apps = await nas.GetAppsAsync(ct) }); }
+            catch (Exception ex)
+            {
+                FileLogger.Write("Nas", $"status ERROR: {ex.Message}");
+                return Results.Json(new { error = ex.Message }, statusCode: 502);
+            }
         });
 
         app.Run();
