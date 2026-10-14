@@ -67,21 +67,63 @@ public sealed class NasMonitor : BackgroundService
         var interval = Math.Max(5, _options.IntervalMinutes);
         FileLog($"started, interval={interval}min, estado en {_statePath}");
 
-        // Primera consulta al arrancar (no esperar un intervalo completo). Mientras haya una mantencion
-        // en curso (lanzada por Sarah-server) se consulta cada minuto para avisar apenas termine.
+        // Cada minuto se miran las acciones de mantencion lanzadas por Sarah-server (liviano: el broker solo
+        // consulta el NAS si hay alguna en curso) para avisar apenas terminan. La revision completa del NAS
+        // corre al arrancar y cada IntervalMinutes, o cada minuto mientras haya una mantencion en curso.
+        var nextFull = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
-            var maintenanceRunning = await SafeTickAsync(stoppingToken);
-            try { await Task.Delay(TimeSpan.FromMinutes(maintenanceRunning ? 1 : interval), stoppingToken); }
+            if (DateTimeOffset.UtcNow >= nextFull)
+            {
+                var running = await SafeRunAsync(() => TickAsync(stoppingToken), stoppingToken);
+                nextFull = DateTimeOffset.UtcNow.AddMinutes(running ? 1 : interval);
+            }
+            else if (await SafeRunAsync(() => OperationsTickAsync(stoppingToken), stoppingToken))
+            {
+                nextFull = DateTimeOffset.UtcNow; // hay una mantencion en curso: revision completa cada minuto
+            }
+
+            try { await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken); }
             catch (OperationCanceledException) { break; }
         }
     }
 
-    private async Task<bool> SafeTickAsync(CancellationToken ct)
+    private async Task<bool> SafeRunAsync(Func<Task<bool>> tick, CancellationToken ct)
     {
-        try { return await TickAsync(ct); }
+        try { return await tick(); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
         catch (Exception ex) { FileLog($"FAIL outer tick: {ex.Message}"); return false; }
+    }
+
+    // Solo las acciones de mantencion (GET /infra/nas/operations). Devuelve true si hay alguna en curso.
+    private async Task<bool> OperationsTickAsync(CancellationToken ct)
+    {
+        var http = _httpFactory.CreateClient("nasmonitor");
+        using var req = new HttpRequestMessage(HttpMethod.Get, _claude.OpsBrokerUrl.TrimEnd('/') + "/infra/nas/operations");
+        req.Headers.Add("X-Owner-Token", OpsTokenMinter.Mint(_claude.OpsBrokerHmacKey));
+        using var resp = await http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode) return false;
+        var ops = JsonSerializer.Deserialize<List<NasOperationDto>>(await resp.Content.ReadAsStringAsync(ct), WebJson) ?? [];
+
+        var state = LoadState();
+        var running = await NotifyOperationsAsync(state, ops, ct);
+        SaveState(state);
+        return running;
+    }
+
+    // Avisa (una sola vez) las acciones terminadas y marca si hay alguna en curso.
+    private async Task<bool> NotifyOperationsAsync(NasMonitorState state, IReadOnlyList<NasOperationDto> ops, CancellationToken ct)
+    {
+        foreach (var op in NasFindingsDiff.FinishedOperations(ops, state.ReportedOperations))
+        {
+            await SendToFelipeAsync(NasFindingsDiff.FormatOperation(op), ct);
+            state.ReportedOperations.Add(op.JobId);
+            FileLog($"NOTIFIED operacion {op.JobId} {op.Status}");
+        }
+        state.ReportedOperations.IntersectWith(ops.Select(o => o.JobId));
+        var running = ops.Any(o => o.Status == "running");
+        state.MaintenanceSinceUtc = running ? state.MaintenanceSinceUtc ?? DateTimeOffset.UtcNow : null;
+        return running;
     }
 
     // Devuelve true si hay una mantencion en curso (para consultar mas seguido).
@@ -140,16 +182,7 @@ public sealed class NasMonitor : BackgroundService
         }
 
         // Mantenciones lanzadas por Sarah-server: aviso al terminar (exito o falla), una sola vez.
-        var finished = NasFindingsDiff.FinishedOperations(health.Operations, state.ReportedOperations);
-        foreach (var op in finished)
-        {
-            await SendToFelipeAsync(NasFindingsDiff.FormatOperation(op), ct);
-            state.ReportedOperations.Add(op.JobId);
-            FileLog($"NOTIFIED operacion {op.JobId} {op.Status}");
-        }
-        state.ReportedOperations.IntersectWith(health.Operations.Select(o => o.JobId));
-        var running = health.Operations.Any(o => o.Status == "running");
-        state.MaintenanceSinceUtc = running ? state.MaintenanceSinceUtc ?? now : null;
+        var running = await NotifyOperationsAsync(state, health.Operations, ct);
 
         SaveState(state);
         return running;
