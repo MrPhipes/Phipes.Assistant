@@ -24,7 +24,7 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
         return await RunGuardedAsync($"app.upgrade {appName}", async rpc =>
         {
             var app = Items(await rpc.CallAsync("app.query", ct,
-                    new object[] { new object[] { "name", "=", appName } }))
+                    Filter("name", "=", appName)))
                 .FirstOrDefault();
             if (app is null) return NasOpResult.Fail(404, $"No existe la app '{appName}' en el NAS.");
             if (app["upgrade_available"]?.GetValue<bool>() != true)
@@ -59,7 +59,7 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
         var token = string.IsNullOrWhiteSpace(_o.NasOpsApiToken) ? _o.NasApiToken : _o.NasOpsApiToken;
         await using var rpc = await TrueNasRpcClient.ConnectAsync(_o, token, ct);
         var job = Items(await rpc.CallAsync("core.get_jobs", ct,
-            new object[] { new object[] { "id", "=", jobId } })).FirstOrDefault();
+            Filter("id", "=", jobId))).FirstOrDefault();
         if (job is null) return null;
         return new JsonObject
         {
@@ -91,7 +91,7 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
         {
             await using var rpc = await TrueNasRpcClient.ConnectAsync(_o, _o.NasOpsApiToken, ct);
             var running = Items(await rpc.CallAsync("core.get_jobs", ct,
-                    new object[] { new object[] { "state", "in", new[] { "RUNNING", "WAITING" } } }))
+                    Filter("state", "in", new[] { "RUNNING", "WAITING" })))
                 .Select(j => j["method"]?.GetValue<string>())
                 .FirstOrDefault(m => m is not null && MaintenanceMethods.Contains(m));
             if (running is not null)
@@ -121,6 +121,11 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
         FileLogger.Write("NasOps", $"{what} -> {r.Status} job={r.JobId?.ToString() ?? "-"} {r.Message}");
         return r;
     }
+
+    // Argumento "filters" de un *.query con una sola condicion: [[campo, op, valor]]. Va envuelto en un
+    // object[] propio porque CallAsync recibe "params object?[]" y aplanaria un object[] suelto.
+    private static object[] Filter(string field, string op, object value) =>
+        [new object[] { new object[] { field, op, value } }];
 
     private static IEnumerable<JsonNode> Items(JsonNode? node) =>
         node is JsonArray a ? a.Where(x => x is not null).Select(x => x!) : [];
