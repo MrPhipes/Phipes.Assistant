@@ -70,6 +70,11 @@ builder.Services.AddOptions<MetaNotifierOptions>()
     .Bind(builder.Configuration.GetSection(MetaNotifierOptions.SectionName))
     .ValidateOnStart();
 
+// NasMonitor (salud del NAS via Ops Broker): opcional, Enabled=false por default.
+builder.Services.AddOptions<NasMonitorOptions>()
+    .Bind(builder.Configuration.GetSection(NasMonitorOptions.SectionName))
+    .ValidateOnStart();
+
 // PhipesAssistantOptions: connection string a la DB local (PhipesAssistant) + API key
 // para los endpoints REST /api/context y /api/sessions. Connection string es Required;
 // ApiKey puede venir vacio y en ese caso los endpoints rechazan TODO (fail-closed).
@@ -189,6 +194,11 @@ builder.Services.AddHostedService<WaProactiveNotifier>();
 // acciones; la ejecucion de la instruccion la hace la skill /meta-comentario de Sarah.
 builder.Services.AddHttpClient("metanotifier", c => c.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddHostedService<MetaProactiveNotifier>();
+
+// NasMonitor: pide la salud del NAS al Ops Broker cada IntervalMinutes y avisa a Felipe por
+// Teams de lo nuevo, lo resuelto y, una vez por semana, de la mantencion pendiente.
+builder.Services.AddHttpClient("nasmonitor", c => c.Timeout = TimeSpan.FromSeconds(60));
+builder.Services.AddHostedService<NasMonitor>();
 
 var app = builder.Build();
 

@@ -50,6 +50,11 @@ internal static class TrustRingPromptPolicy
                 "-- eso devuelve el texto de infraestructura; razone sobre el y responda concreto. Para los " +
                 "vecinos de una entidad puntual use GET \"$($env:SARAH_OPS_BROKER_URL)/infra/graph?entity=<nombre>\" " +
                 "con el mismo header. NUNCA responda que no tiene el dato ni que lo verifique Felipe en un panel. " +
+                "Si pregunta por el NAS (estado, pool, scrub, snapshots, apps, discos, actualizaciones, alertas), " +
+                "use GET \"$($env:SARAH_OPS_BROKER_URL)/infra/nas\" con el mismo header: devuelve el estado real " +
+                "y una lista Findings (critical / warning / maintenance); resuma lo importante, no vuelque el JSON. " +
+                "Usted monitorea el NAS y le avisa solo; cualquier mantencion (actualizar, reiniciar) se propone " +
+                "con plan y horario fuera de 01:30-06:00 y se ejecuta solo con la confirmacion de Felipe. " +
                 "Para EJECUTAR operaciones (reiniciar un servicio de la whitelist, levantar un sitio IIS) use " +
                 "PowerShell contra el broker: POST \"$($env:SARAH_OPS_BROKER_URL)/ops/service\" con el header " +
                 "X-Owner-Token y body JSON { \"action\": \"restart\", \"name\": \"<servicio>\" }; o POST " +
@@ -105,6 +110,9 @@ internal static class TrustRingPromptPolicy
         }
         return TimeZoneInfo.Local;
     }
+
+    // Instante expresado en hora de Chile (para agendar tareas en hora local).
+    public static DateTimeOffset InChile(DateTimeOffset instant) => TimeZoneInfo.ConvertTime(instant, ChileTz);
 
     // Convierte un instante (normalmente UTC desde Graph) a hora de Chile, ya formateado.
     public static string ToChile(DateTimeOffset? instant) =>
