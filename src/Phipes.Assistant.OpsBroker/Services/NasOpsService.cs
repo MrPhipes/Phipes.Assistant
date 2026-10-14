@@ -21,8 +21,6 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options, NasOpsTrac
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private readonly OpsBrokerOptions _o = options.Value;
 
-    // Metodos de TrueNAS que cuentan como "mantencion en curso" para impedir dos a la vez.
-    private static readonly string[] MaintenanceMethods = ["app.upgrade", "update.run", "update.download", "update.update"];
 
     public async Task<NasOpResult> UpgradeAppAsync(string appName, CancellationToken ct)
     {
@@ -97,13 +95,17 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options, NasOpsTrac
             return Log(what, NasOpResult.Fail(409, "Ya hay una acción sobre el NAS iniciándose."));
         try
         {
+            // "Una a la vez": esta llave no ve los jobs de TrueNAS, asi que se mira (1) el registro propio de
+            // acciones en curso y (2) apps que se esten levantando o deteniendo (cubre lo lanzado desde la UI).
+            var pending = (await tracker.ResolveAsync(ct)).FirstOrDefault(o => o.Status == "running");
+            if (pending is not null)
+                return Log(what, NasOpResult.Fail(409, $"Ya hay una mantención en curso ({pending.Description}). Espere a que termine; le aviso al terminar."));
+
             await using var rpc = await TrueNasRpcClient.ConnectAsync(_o, _o.NasOpsApiToken, ct);
-            var running = Items(await rpc.CallAsync("core.get_jobs", ct,
-                    Filter("state", "in", new[] { "RUNNING", "WAITING" })))
-                .Select(j => j["method"]?.GetValue<string>())
-                .FirstOrDefault(m => m is not null && MaintenanceMethods.Contains(m));
-            if (running is not null)
-                return Log(what, NasOpResult.Fail(409, $"Ya hay una mantención en curso en el NAS ({running}). Espere a que termine."));
+            var busy = Items(await rpc.CallAsync("app.query", ct))
+                .FirstOrDefault(a => a["state"]?.GetValue<string>() is "DEPLOYING" or "STOPPING");
+            if (busy is not null)
+                return Log(what, NasOpResult.Fail(409, $"La app {busy["name"]?.GetValue<string>()} se está levantando o deteniendo. Espere a que termine."));
 
             return Log(what, await action(rpc));
         }

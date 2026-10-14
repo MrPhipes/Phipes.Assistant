@@ -77,29 +77,27 @@ public sealed class NasOpsTracker(IOptions<OpsBrokerOptions> options)
         return ops.Where(o => o.StartedUtc >= cutoff).ToList();
     }
 
+    // La llave de acciones (no FULL_ADMIN) NO ve los jobs de TrueNAS, ni siquiera los que lanzo (probado
+    // 14-10-2026: core.get_jobs vacio). Por eso el estado se deduce de lo que si ve:
+    //   - sistema: exito cuando el NAS responde con la version destino;
+    //   - app: exito cuando esta RUNNING y sin actualizacion pendiente, con al menos 1 minuto desde el
+    //     inicio. El flag upgrade_available se apaga apenas termina la descarga, con la app aun en
+    //     DEPLOYING, asi que exigir RUNNING evita dar por terminada una app que todavia se esta levantando.
+    //     Las apps custom reportan siempre version 1.0.0: la version no sirve. CRASHED = falla.
     private static async Task ResolveOneAsync(TrueNasRpcClient rpc, NasOperation op, string? version, CancellationToken ct)
     {
-        var job = (await rpc.CallAsync("core.get_jobs", ct,
-            [new object[] { new object[] { "id", "=", op.JobId } }]) as JsonArray)?.FirstOrDefault();
-        var state = job?["state"]?.GetValue<string>();
-
         if (op.Kind == "system")
         {
-            if (state is "FAILED" or "ABORTED")
-                Finish(op, "failed", job?["error"]?.GetValue<string>() ?? state);
-            else if (version is not null && version == op.Target)
-                Finish(op, "success", null);
+            if (version is not null && version == op.Target) Finish(op, "success", null);
             return;
         }
 
-        if (state == "SUCCESS") Finish(op, "success", null);
-        else if (state is "FAILED" or "ABORTED") Finish(op, "failed", job?["error"]?.GetValue<string>() ?? state);
-        else if (job is null)
-        {
-            var app = (await rpc.CallAsync("app.query", ct,
-                [new object[] { new object[] { "name", "=", op.Target } }]) as JsonArray)?.FirstOrDefault();
-            if (app?["upgrade_available"]?.GetValue<bool>() == false) Finish(op, "success", null);
-        }
+        if (DateTimeOffset.UtcNow - op.StartedUtc < TimeSpan.FromMinutes(1)) return;
+        var app = (await rpc.CallAsync("app.query", ct,
+            [new object[] { new object[] { "name", "=", op.Target } }]) as JsonArray)?.FirstOrDefault();
+        var state = app?["state"]?.GetValue<string>();
+        if (state == "CRASHED") Finish(op, "failed", "la app quedó en estado CRASHED");
+        else if (state == "RUNNING" && app?["upgrade_available"]?.GetValue<bool>() == false) Finish(op, "success", null);
     }
 
     private static void Finish(NasOperation op, string status, string? error)
