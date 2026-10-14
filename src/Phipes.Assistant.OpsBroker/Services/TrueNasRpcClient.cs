@@ -24,10 +24,15 @@ public sealed class TrueNasRpcClient : IAsyncDisposable
 
     private TrueNasRpcClient() { }
 
-    public static async Task<TrueNasRpcClient> ConnectAsync(OpsBrokerOptions o, CancellationToken ct)
+    // Conexion de lectura (OpsBroker:NasApiToken, llave read-only).
+    public static Task<TrueNasRpcClient> ConnectAsync(OpsBrokerOptions o, CancellationToken ct) =>
+        ConnectAsync(o, o.NasApiToken, ct);
+
+    // Conexion con una llave especifica (p. ej. OpsBroker:NasOpsApiToken para las acciones).
+    public static async Task<TrueNasRpcClient> ConnectAsync(OpsBrokerOptions o, string apiToken, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(o.NasBaseUrl) || string.IsNullOrWhiteSpace(o.NasApiToken))
-            throw new InvalidOperationException("NAS no configurado (NasBaseUrl / NasApiToken)");
+        if (string.IsNullOrWhiteSpace(o.NasBaseUrl) || string.IsNullOrWhiteSpace(apiToken))
+            throw new InvalidOperationException("NAS no configurado (NasBaseUrl / llave API)");
 
         var client = new TrueNasRpcClient();
         var pin = NormalizeThumbprint(o.NasCertThumbprint);
@@ -45,7 +50,7 @@ public sealed class TrueNasRpcClient : IAsyncDisposable
         try
         {
             await client._ws.ConnectAsync(uri, ct);
-            var ok = await client.CallAsync("auth.login_with_api_key", ct, o.NasApiToken);
+            var ok = await client.CallAsync("auth.login_with_api_key", ct, apiToken);
             if (ok?.GetValueKind() != JsonValueKind.True)
                 throw new InvalidOperationException("el NAS rechazo la llave API");
             return client;

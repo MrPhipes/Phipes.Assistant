@@ -59,4 +59,13 @@ public sealed class OpsBrokerOptions
 
     // Apps detenidas a proposito: no generan aviso de "app detenida".
     public string[] NasIgnoredApps { get; set; } = Array.Empty<string>();
+
+    // Acciones de mantencion del NAS (actualizar apps, actualizar TrueNAS y reiniciar). Llave aparte de
+    // la de lectura, de un usuario con solo READONLY_ADMIN + APPS_WRITE + SYSTEM_UPDATE_WRITE (no
+    // FULL_ADMIN). Vive en User Secrets. Vacia = acciones deshabilitadas.
+    public string NasOpsApiToken { get; set; } = "";
+
+    // Ventana de respaldos (hora de Chile) en la que se rechaza cualquier accion sobre el NAS.
+    public string NasOpsBlockedFrom { get; set; } = "01:30";
+    public string NasOpsBlockedTo { get; set; } = "06:00";
 }

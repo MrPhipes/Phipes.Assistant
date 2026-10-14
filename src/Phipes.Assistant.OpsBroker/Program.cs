@@ -33,6 +33,7 @@ public static class Program
         builder.Services.AddSingleton<InfraReader>();
         builder.Services.AddSingleton<OpsExecutor>();
         builder.Services.AddSingleton<NasHealthService>();
+        builder.Services.AddSingleton<NasOpsService>();
         builder.Services.AddWindowsService(o => o.ServiceName = "Phipes.Assistant.OpsBroker");
 
         var listenUrl = builder.Configuration["OpsBroker:ListenUrl"] ?? "http://127.0.0.1:5060";
@@ -111,6 +112,35 @@ public static class Program
             {
                 FileLogger.Write("Nas", $"status ERROR: {ex.Message}");
                 return Results.Json(new { error = ex.Message }, statusCode: 502);
+            }
+        });
+
+        // Acciones de mantencion del NAS. Solo turnos Owner (gate de arriba) y SIEMPRE despues de que
+        // Felipe confirme por Teams (lo exige el prompt del Owner). Devuelven 202 + jobId; el avance se
+        // consulta en /infra/nas/jobs/{id}. Resguardos en NasOpsService (ventana de respaldos, una a la vez).
+        app.MapPost("/infra/nas/apps/{name}/upgrade", async (string name, NasOpsService ops, CancellationToken ct) =>
+        {
+            var r = await ops.UpgradeAppAsync(name, ct);
+            return Results.Json(new { message = r.Message, jobId = r.JobId }, statusCode: r.Status);
+        });
+
+        app.MapPost("/infra/nas/update", async (NasOpsService ops, CancellationToken ct) =>
+        {
+            var r = await ops.UpdateSystemAsync(ct);
+            return Results.Json(new { message = r.Message, jobId = r.JobId }, statusCode: r.Status);
+        });
+
+        app.MapGet("/infra/nas/jobs/{id:long}", async (long id, NasOpsService ops, CancellationToken ct) =>
+        {
+            try
+            {
+                var job = await ops.GetJobAsync(id, ct);
+                return job is null ? Results.NotFound(new { message = $"No existe el job {id}." }) : Results.Json(job);
+            }
+            catch (Exception ex)
+            {
+                // Durante el reinicio del NAS no hay respuesta: se informa tal cual, no es un error del broker.
+                return Results.Json(new { message = $"El NAS no responde (¿reiniciando?): {ex.Message}" }, statusCode: 503);
             }
         });
 
