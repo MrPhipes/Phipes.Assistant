@@ -67,21 +67,25 @@ public sealed class NasMonitor : BackgroundService
         var interval = Math.Max(5, _options.IntervalMinutes);
         FileLog($"started, interval={interval}min, estado en {_statePath}");
 
-        // Primera consulta al arrancar (no esperar un intervalo completo).
-        await SafeTickAsync(stoppingToken);
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(interval));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
-            await SafeTickAsync(stoppingToken);
+        // Primera consulta al arrancar (no esperar un intervalo completo). Mientras haya una mantencion
+        // en curso (lanzada por Sarah-server) se consulta cada minuto para avisar apenas termine.
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var maintenanceRunning = await SafeTickAsync(stoppingToken);
+            try { await Task.Delay(TimeSpan.FromMinutes(maintenanceRunning ? 1 : interval), stoppingToken); }
+            catch (OperationCanceledException) { break; }
+        }
     }
 
-    private async Task SafeTickAsync(CancellationToken ct)
+    private async Task<bool> SafeTickAsync(CancellationToken ct)
     {
-        try { await TickAsync(ct); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { FileLog($"FAIL outer tick: {ex.Message}"); }
+        try { return await TickAsync(ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
+        catch (Exception ex) { FileLog($"FAIL outer tick: {ex.Message}"); return false; }
     }
 
-    private async Task TickAsync(CancellationToken ct)
+    // Devuelve true si hay una mantencion en curso (para consultar mas seguido).
+    private async Task<bool> TickAsync(CancellationToken ct)
     {
         var state = LoadState();
         var (health, error) = await FetchHealthAsync(ct);
@@ -90,6 +94,14 @@ public sealed class NasMonitor : BackgroundService
         {
             state.ConsecutiveFailures++;
             FileLog($"consulta fallida {state.ConsecutiveFailures}/{_options.FailuresBeforeAlert}: {error}");
+            // Durante una mantencion lanzada por Sarah (p. ej. el reinicio tras actualizar TrueNAS) que el
+            // NAS no responda es esperable: no se avisa como caida mientras siga en curso.
+            // Tope de 45 min: si no vuelve, se avisa igual.
+            if (state.MaintenanceSinceUtc is { } since && DateTimeOffset.UtcNow - since < TimeSpan.FromMinutes(45))
+            {
+                SaveState(state);
+                return true;
+            }
             if (state.ConsecutiveFailures >= _options.FailuresBeforeAlert && !state.UnreachableNotified)
             {
                 await SendToFelipeAsync(
@@ -99,7 +111,7 @@ public sealed class NasMonitor : BackgroundService
                 state.UnreachableNotified = true;
             }
             SaveState(state);
-            return;
+            return false;
         }
 
         if (state.UnreachableNotified)
@@ -127,7 +139,20 @@ public sealed class NasMonitor : BackgroundService
             FileLog("resumen semanal enviado");
         }
 
+        // Mantenciones lanzadas por Sarah-server: aviso al terminar (exito o falla), una sola vez.
+        var finished = NasFindingsDiff.FinishedOperations(health.Operations, state.ReportedOperations);
+        foreach (var op in finished)
+        {
+            await SendToFelipeAsync(NasFindingsDiff.FormatOperation(op), ct);
+            state.ReportedOperations.Add(op.JobId);
+            FileLog($"NOTIFIED operacion {op.JobId} {op.Status}");
+        }
+        state.ReportedOperations.IntersectWith(health.Operations.Select(o => o.JobId));
+        var running = health.Operations.Any(o => o.Status == "running");
+        state.MaintenanceSinceUtc = running ? state.MaintenanceSinceUtc ?? now : null;
+
         SaveState(state);
+        return running;
     }
 
     private async Task<(NasHealthDto? Health, string? Error)> FetchHealthAsync(CancellationToken ct)
@@ -402,6 +427,19 @@ public static class NasFindingsDiff
         return sb.ToString();
     }
 
+    // Operaciones terminadas (success / failed) que aun no se avisaron.
+    public static IReadOnlyList<NasOperationDto> FinishedOperations(
+        IEnumerable<NasOperationDto> operations, IReadOnlySet<long> reported) =>
+        operations.Where(o => o.Status is "success" or "failed" && !reported.Contains(o.JobId)).ToList();
+
+    public static string FormatOperation(NasOperationDto op)
+    {
+        var minutes = op.FinishedUtc is { } end ? $" ({Math.Max(1, (int)Math.Round((end - op.StartedUtc).TotalMinutes))} min)" : "";
+        return op.Status == "success"
+            ? $"✅ NAS: terminó la {Html(op.Description)}{minutes}. Todo en orden."
+            : $"❌ NAS: falló la {Html(op.Description)}{minutes}: {Html(op.Error ?? "sin detalle")}. Revíselo conmigo antes de reintentar.";
+    }
+
     private static string Html(string text) => Utilities.InfraMonitorWebhook.HtmlText(text);
 
     private static int Rank(string severity) => severity switch
@@ -420,6 +458,10 @@ public sealed class NasMonitorState
     public DateTimeOffset? LastWeeklySummaryUtc { get; set; }
     public int ConsecutiveFailures { get; set; }
     public bool UnreachableNotified { get; set; }
+
+    // Jobs de mantencion ya avisados (no repetir) y desde cuando hay una en curso.
+    public HashSet<long> ReportedOperations { get; set; } = [];
+    public DateTimeOffset? MaintenanceSinceUtc { get; set; }
 }
 
 // Forma de la respuesta de GET /infra/nas del broker (solo lo que usa el monitor).
@@ -431,7 +473,11 @@ public sealed class NasHealthDto
     public List<NasAppDto> Apps { get; set; } = [];
     public List<NasFindingDto> Findings { get; set; } = [];
     public List<string> Errors { get; set; } = [];
+    public List<NasOperationDto> Operations { get; set; } = [];
 }
+
+public sealed record NasOperationDto(
+    long JobId, string Description, string Status, DateTimeOffset StartedUtc, DateTimeOffset? FinishedUtc, string? Error);
 
 public sealed record NasPoolDto(string Name, string Status, DateTimeOffset? ScanEnd);
 

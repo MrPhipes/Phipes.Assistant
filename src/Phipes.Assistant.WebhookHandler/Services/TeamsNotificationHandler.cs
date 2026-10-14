@@ -148,7 +148,30 @@ public sealed class TeamsNotificationHandler : ITeamsNotificationHandler
 
         try
         {
-            var reply = await BuildResponseAsync(chatId, message, attachments, cancellationToken);
+            string reply;
+            try
+            {
+                reply = await BuildResponseAsync(chatId, message, attachments, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                // El turno se corto por tiempo: avisar en vez de dejar al interlocutor sin respuesta (lo que
+                // alcanzo a hacer queda en la sesion, que se retoma en el proximo mensaje). Se relanza para
+                // que el error y la alerta de timeouts sigan su curso.
+                try
+                {
+                    await SendChatReplyAsync(chatId,
+                        "⏳ Esto me está tomando más de lo previsto y se me acabó el tiempo de este mensaje. " +
+                        "Lo que alcancé a avanzar quedó registrado: escríbame de nuevo en un momento y lo retomo.",
+                        accessToken, cancellationToken);
+                    FileLog($"TIMEOUT NOTICE SENT to chat={chatId}");
+                }
+                catch (Exception ex)
+                {
+                    FileLog($"TIMEOUT NOTICE FAIL chat={chatId}: {ex.Message}");
+                }
+                throw;
+            }
             // Reply vacio = LLM decidio legitimamente no responder (ej. chat de alertas).
             // No es error, no postear nada, no alarmar.
             if (string.IsNullOrWhiteSpace(reply))

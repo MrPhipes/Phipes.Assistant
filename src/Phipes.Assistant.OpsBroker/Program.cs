@@ -33,6 +33,7 @@ public static class Program
         builder.Services.AddSingleton<InfraReader>();
         builder.Services.AddSingleton<OpsExecutor>();
         builder.Services.AddSingleton<NasHealthService>();
+        builder.Services.AddSingleton<NasOpsTracker>();
         builder.Services.AddSingleton<NasOpsService>();
         builder.Services.AddWindowsService(o => o.ServiceName = "Phipes.Assistant.OpsBroker");
 
@@ -121,13 +122,13 @@ public static class Program
         app.MapPost("/infra/nas/apps/{name}/upgrade", async (string name, NasOpsService ops, CancellationToken ct) =>
         {
             var r = await ops.UpgradeAppAsync(name, ct);
-            return Results.Json(new { message = r.Message, jobId = r.JobId }, statusCode: r.Status);
+            return Results.Json(new { message = r.Message, jobId = r.JobId, estimatedMinutes = r.EstimatedMinutes }, statusCode: r.Status);
         });
 
         app.MapPost("/infra/nas/update", async (NasOpsService ops, CancellationToken ct) =>
         {
             var r = await ops.UpdateSystemAsync(ct);
-            return Results.Json(new { message = r.Message, jobId = r.JobId }, statusCode: r.Status);
+            return Results.Json(new { message = r.Message, jobId = r.JobId, estimatedMinutes = r.EstimatedMinutes }, statusCode: r.Status);
         });
 
         app.MapGet("/infra/nas/jobs/{id:long}", async (long id, NasOpsService ops, CancellationToken ct) =>

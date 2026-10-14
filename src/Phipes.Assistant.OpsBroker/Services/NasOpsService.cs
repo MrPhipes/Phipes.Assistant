@@ -10,8 +10,13 @@ namespace Phipes.Assistant.OpsBroker.Services;
 // APPS_WRITE + SYSTEM_UPDATE_WRITE ademas de lectura: no puede borrar datos, tocar pools ni shares.
 // Resguardos: deshabilitado sin llave, rechaza la ventana de respaldos, una operacion a la vez, solo
 // apps que existen y tienen actualizacion, y cada accion queda en el log "NasOps".
-public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
+public sealed class NasOpsService(IOptions<OpsBrokerOptions> options, NasOpsTracker tracker)
 {
+    // Estimaciones para responder "se estiman X minutos" (medido el 14-10-2026: TrueNAS ya descargado
+    // aplico + reinicio en ~4 min; una app tarda 1-5 min segun sus imagenes).
+    private const int AppUpgradeMinutes = 5;
+    private const int SystemUpdateMinutes = 10;
+
     private static readonly TimeZoneInfo ChileTz = ResolveChileTz();
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private readonly OpsBrokerOptions _o = options.Value;
@@ -30,8 +35,10 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
             if (app["upgrade_available"]?.GetValue<bool>() != true)
                 return NasOpResult.Fail(409, $"La app '{appName}' no tiene actualización disponible.");
 
-            var job = await rpc.CallAsync("app.upgrade", ct, appName);
-            return NasOpResult.Started(job!.GetValue<long>(), $"Actualización de la app {appName} iniciada.");
+            var job = (await rpc.CallAsync("app.upgrade", ct, appName))!.GetValue<long>();
+            var description = $"actualización de la app {appName}";
+            tracker.Record(job, "app", appName, description, AppUpgradeMinutes);
+            return NasOpResult.Started(job, $"Actualización de la app {appName} iniciada.", AppUpgradeMinutes);
         }, ct);
     }
 
@@ -46,9 +53,10 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
             if (string.IsNullOrEmpty(version))
                 return NasOpResult.Fail(409, "No hay actualización de TrueNAS disponible.");
 
-            var job = await rpc.CallAsync("update.run", ct, new Dictionary<string, object?> { ["reboot"] = true });
-            return NasOpResult.Started(job!.GetValue<long>(),
-                $"Actualización de TrueNAS a {version} iniciada; el NAS se reiniciará al terminar de aplicarla.");
+            var job = (await rpc.CallAsync("update.run", ct, new Dictionary<string, object?> { ["reboot"] = true }))!.GetValue<long>();
+            tracker.Record(job, "system", version, $"actualización de TrueNAS a {version}", SystemUpdateMinutes);
+            return NasOpResult.Started(job,
+                $"Actualización de TrueNAS a {version} iniciada; el NAS se reiniciará al terminar de aplicarla.", SystemUpdateMinutes);
         }, ct);
     }
 
@@ -142,8 +150,9 @@ public sealed class NasOpsService(IOptions<OpsBrokerOptions> options)
 }
 
 // Status: codigo HTTP que devuelve el endpoint (202 = iniciada).
-public sealed record NasOpResult(int Status, string Message, long? JobId)
+public sealed record NasOpResult(int Status, string Message, long? JobId, int? EstimatedMinutes = null)
 {
-    public static NasOpResult Started(long jobId, string message) => new(202, message, jobId);
+    public static NasOpResult Started(long jobId, string message, int estimatedMinutes) =>
+        new(202, message, jobId, estimatedMinutes);
     public static NasOpResult Fail(int status, string message) => new(status, message, null);
 }
