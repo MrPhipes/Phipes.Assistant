@@ -43,3 +43,4 @@ logs/
 Thumbs.db
 .DS_Store
 publish-tmp/
+publish-*/
