@@ -131,6 +131,11 @@ public static class Program
             return Results.Json(new { message = r.Message, jobId = r.JobId, estimatedMinutes = r.EstimatedMinutes }, statusCode: r.Status);
         });
 
+        // GET /infra/nas/operations → acciones lanzadas por Sarah y su estado. Liviano: solo consulta el
+        // NAS si hay alguna en curso. El NasMonitor lo consulta cada minuto para avisar apenas terminan.
+        app.MapGet("/infra/nas/operations", async (NasOpsTracker tracker, CancellationToken ct) =>
+            Results.Json(await tracker.ResolveAsync(ct)));
+
         app.MapGet("/infra/nas/jobs/{id:long}", async (long id, NasOpsService ops, CancellationToken ct) =>
         {
             try
