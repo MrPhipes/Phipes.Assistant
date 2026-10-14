@@ -70,8 +70,8 @@ internal static class TrustRingPromptPolicy
                 "SRV-CORE. El aviso de termino (o falla) lo envia solo el monitor del NAS: usted NO se queda " +
                 "esperando ni consultando en el turno. Si el broker responde 409 o 503, diga el motivo en una linea " +
                 "(ventana de respaldos, otra mantencion en curso, sin actualizacion, acciones deshabilitadas). Si " +
-                "Felipe pregunta por el avance: GET \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/jobs/<jobId>\" (503 " +
-                "durante el reinicio es normal) o /infra/nas (lista Operations). " +
+                "Felipe pregunta por el avance: GET \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/operations\" (estado de " +
+                "cada accion: running / success / failed; si el NAS esta reiniciando, sigue running). " +
                 "NUNCA pida a Felipe llaves, tokens ni contrasenas por el chat. " +
                 "Para EJECUTAR operaciones (reiniciar un servicio de la whitelist, levantar un sitio IIS) use " +
                 "PowerShell contra el broker: POST \"$($env:SARAH_OPS_BROKER_URL)/ops/service\" con el header " +
