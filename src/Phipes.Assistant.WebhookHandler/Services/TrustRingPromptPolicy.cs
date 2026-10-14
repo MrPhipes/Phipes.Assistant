@@ -58,16 +58,21 @@ internal static class TrustRingPromptPolicy
                 "MANTENCION DEL NAS (usted la ejecuta, por el broker, con el mismo header X-Owner-Token): " +
                 "actualizar una app = POST \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/apps/<app>/upgrade\"; " +
                 "actualizar TrueNAS (aplica la version disponible y REINICIA el NAS) = POST " +
-                "\"$($env:SARAH_OPS_BROKER_URL)/infra/nas/update\". Ambos responden 202 con jobId; el avance se " +
-                "consulta con GET \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/jobs/<jobId>\" (state, percent, error). " +
-                "REGLA: antes de CADA POST describa exactamente que va a hacer y su impacto (actualizar una app la " +
-                "deja fuera de servicio unos minutos; actualizar TrueNAS reinicia el NAS y corta Vaultwarden, Odoo, " +
-                "las demas apps y el disco iSCSI de respaldos de SRV-CORE por unos minutos) y espere un 'si' " +
-                "explicito de Felipe en ESE turno; nunca encadene varias acciones con una sola confirmacion salvo que " +
-                "el las enumere. Una accion a la vez; si el broker responde 409 explique el motivo (ventana de " +
-                "respaldos, otra mantencion en curso, sin actualizacion). Tras lanzar, consulte el job y reporte el " +
-                "resultado; durante el reinicio /infra/nas/jobs responde 503 (normal), y al volver confirme la " +
-                "version con /infra/nas. NUNCA pida a Felipe llaves, tokens ni contrasenas por el chat. " +
+                "\"$($env:SARAH_OPS_BROKER_URL)/infra/nas/update\". Ambos responden 202 con jobId y estimatedMinutes. " +
+                "CONFIRMACION: una orden explicita de Felipe que nombra la accion ('actualiza TrueNAS', 'actualiza " +
+                "odoo', 'vuelve a intentar actualizarlo') YA es la confirmacion: ejecute. Si el pedido es vago ('haz " +
+                "la mantencion') o abarca varias acciones que el no enumero, NO ejecute: proponga el plan (orden, " +
+                "impacto, minutos) y pida su 'si'. Una accion a la vez. " +
+                "RESPUESTA AL EJECUTAR: haga el POST y responda DE INMEDIATO en una o dos lineas, sin esperar a que " +
+                "termine ni consultar el job: 'Si, se puede. Ya comence <accion>; se estiman <estimatedMinutes> " +
+                "minutos. <impacto>. Le aviso cuando termine.' Impacto: una app queda fuera de servicio esos minutos; " +
+                "TrueNAS reinicia el NAS y corta Vaultwarden, Odoo, las demas apps y el iSCSI de respaldos de " +
+                "SRV-CORE. El aviso de termino (o falla) lo envia solo el monitor del NAS: usted NO se queda " +
+                "esperando ni consultando en el turno. Si el broker responde 409 o 503, diga el motivo en una linea " +
+                "(ventana de respaldos, otra mantencion en curso, sin actualizacion, acciones deshabilitadas). Si " +
+                "Felipe pregunta por el avance: GET \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/jobs/<jobId>\" (503 " +
+                "durante el reinicio es normal) o /infra/nas (lista Operations). " +
+                "NUNCA pida a Felipe llaves, tokens ni contrasenas por el chat. " +
                 "Para EJECUTAR operaciones (reiniciar un servicio de la whitelist, levantar un sitio IIS) use " +
                 "PowerShell contra el broker: POST \"$($env:SARAH_OPS_BROKER_URL)/ops/service\" con el header " +
                 "X-Owner-Token y body JSON { \"action\": \"restart\", \"name\": \"<servicio>\" }; o POST " +

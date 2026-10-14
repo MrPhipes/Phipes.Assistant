@@ -14,7 +14,7 @@ namespace Phipes.Assistant.OpsBroker.Services;
 // Ademas de los datos crudos, devuelve Findings: hallazgos con clave estable y severidad.
 // El monitor del WebhookHandler compara las claves entre una consulta y la siguiente para
 // avisar a Felipe solo de lo nuevo y de lo resuelto. Nunca devuelve credenciales.
-public sealed class NasHealthService(IOptions<OpsBrokerOptions> options)
+public sealed class NasHealthService(IOptions<OpsBrokerOptions> options, NasOpsTracker opsTracker)
 {
     private readonly OpsBrokerOptions _o = options.Value;
 
@@ -123,6 +123,9 @@ public sealed class NasHealthService(IOptions<OpsBrokerOptions> options)
             }
         });
 
+        // Acciones de mantencion lanzadas por Sarah-server y su estado (el NasMonitor avisa al terminar).
+        await Try(h, "operations", async () => h.Operations.AddRange(await opsTracker.ResolveAsync(ct)));
+
         h.Findings.AddRange(NasHealthEvaluator.Evaluate(h, _o));
         FileLogger.Write("Nas", $"health OK: {h.Findings.Count} hallazgos, {h.Errors.Count} consultas fallidas");
         return h;
@@ -197,6 +200,7 @@ public sealed class NasHealth
     public List<NasAlert> Alerts { get; } = [];
     public List<NasFinding> Findings { get; } = [];
     public List<string> Errors { get; } = [];
+    public List<NasOperation> Operations { get; } = [];
 }
 
 public sealed record NasPool(
