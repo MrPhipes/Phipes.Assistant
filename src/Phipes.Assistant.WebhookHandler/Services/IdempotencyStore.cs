@@ -10,6 +10,9 @@ namespace Phipes.Assistant.WebhookHandler.Services;
 public interface IIdempotencyStore
 {
     Task<bool> TryMarkProcessedAsync(string subscriptionId, string resourceId, string channel, CancellationToken cancellationToken = default);
+
+    // Deshace una marca cuando el procesamiento fallo, para que el reintento del emisor se procese.
+    Task ForgetAsync(string subscriptionId, string resourceId, CancellationToken cancellationToken = default);
 }
 
 public sealed class SqlIdempotencyStore : IIdempotencyStore
@@ -57,6 +60,24 @@ public sealed class SqlIdempotencyStore : IIdempotencyStore
             // momentaneo del SQL.
             FileLog($"WARN: Idempotency check fallo, FAIL-OPEN: {ex.Message}");
             return true;
+        }
+    }
+
+    public async Task ForgetAsync(string subscriptionId, string resourceId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var conn = new SqlConnection(_connectionString);
+            await conn.OpenAsync(cancellationToken);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM WebhookProcessedMessages WHERE SubscriptionId = @s AND ResourceId = @r";
+            cmd.Parameters.AddWithValue("@s", Truncate(subscriptionId, 64));
+            cmd.Parameters.AddWithValue("@r", Truncate(resourceId, 512));
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            FileLog($"WARN: no se pudo deshacer la marca {subscriptionId}/{resourceId}: {ex.Message}");
         }
     }
 

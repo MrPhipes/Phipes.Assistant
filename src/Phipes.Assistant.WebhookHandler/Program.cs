@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Phipes.Assistant.WebhookHandler.Configuration;
 using Phipes.Assistant.WebhookHandler.Models;
 using Phipes.Assistant.WebhookHandler.Services;
+using Phipes.Assistant.WebhookHandler.Utilities;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -89,6 +90,9 @@ builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(Sec
 // => fail-closed (endpoint deshabilitado). No usa ValidateOnStart para no romper el
 // arranque si aun no se ha provisto la key (migracion gradual).
 builder.Services.Configure<M365RelayOptions>(builder.Configuration.GetSection(M365RelayOptions.SectionName));
+
+// Receptor de alertas de InfraMonitor (/api/alerts/inframonitor). Secret vacio => fail-closed.
+builder.Services.Configure<InfraMonitorAlertsOptions>(builder.Configuration.GetSection(InfraMonitorAlertsOptions.SectionName));
 
 builder.Services.AddSingleton<IIdempotencyStore, SqlIdempotencyStore>();
 builder.Services.AddSingleton<IWorkingMemoryReader, SqlWorkingMemoryReader>();
@@ -583,6 +587,77 @@ app.MapGet("/api/m365-token", async (
     {
         FileLog($"M365Relay EXC: {ex.Message}");
         return Results.Json(new { error = ex.Message }, statusCode: 503);
+    }
+});
+
+// =====================================================================
+// POST /api/alerts/inframonitor — receptor del contrato webhook v1 de PacificDev.InfraMonitor
+// (docs/notificaciones-webhook.md en ese repo). InfraMonitor es agnostico del canal: aca Sarah
+// es un receptor mas y publica cada evento en el chat de alertas, sin pasar por Claude.
+// Orden: origen (allowlist, sin tunel) -> firma HMAC + ventana de 300 s -> idempotencia por
+// X-InfraMonitor-Delivery -> publicar. Se publica antes de responder (Graph tarda ~1 s, el
+// portal espera 15 s): si Teams falla se responde 503 y se deshace la marca, asi el reintento
+// del portal (mismo id) vuelve a intentarlo en vez de perder la alerta.
+// =====================================================================
+app.MapPost("/api/alerts/inframonitor", async (
+    HttpRequest req,
+    IOptions<InfraMonitorAlertsOptions> imOpts,
+    IIdempotencyStore idem,
+    IAlertManager alerts,
+    CancellationToken ct) =>
+{
+    var o = imOpts.Value;
+    var remoteIp = req.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
+
+    if (string.IsNullOrEmpty(o.Secret))
+    {
+        FileLog("InfraMonitor FAIL: Secret no configurado (fail-closed)");
+        return Results.Unauthorized();
+    }
+    if (req.Headers.ContainsKey("CF-Connecting-IP")
+        || !o.AllowedSourcePrefixes.Any(p => remoteIp.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+    {
+        FileLog($"InfraMonitor FAIL: origen {remoteIp} no permitido");
+        return Results.Unauthorized();
+    }
+
+    using var ms = new MemoryStream();
+    await req.Body.CopyToAsync(ms, ct);
+    var body = ms.ToArray();
+
+    var delivery = req.Headers["X-InfraMonitor-Delivery"].ToString();
+    var evt = req.Headers["X-InfraMonitor-Event"].ToString();
+    if (!InfraMonitorWebhook.VerifySignature(o.Secret, req.Headers["X-InfraMonitor-Timestamp"].ToString(), body,
+            req.Headers["X-InfraMonitor-Signature"].ToString(), DateTimeOffset.UtcNow, o.MaxClockSkewSeconds))
+    {
+        FileLog($"InfraMonitor FAIL: firma invalida o vencida (evento {evt}, entrega {delivery}) desde {remoteIp}");
+        return Results.Unauthorized();
+    }
+    if (string.IsNullOrEmpty(delivery)) return Results.BadRequest();
+
+    if (!await idem.TryMarkProcessedAsync("inframonitor", delivery, "inframonitor", ct))
+    {
+        FileLog($"InfraMonitor DUP: entrega {delivery} ya publicada");
+        return Results.NoContent();
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(body);
+        await alerts.PostHtmlAsync(InfraMonitorWebhook.FormatForTeams(doc.RootElement), ct);
+        FileLog($"InfraMonitor OK: {evt} {delivery} publicado");
+        return Results.NoContent();
+    }
+    catch (JsonException ex)
+    {
+        FileLog($"InfraMonitor FAIL: cuerpo invalido {delivery}: {ex.Message}");
+        return Results.BadRequest();
+    }
+    catch (Exception ex)
+    {
+        await idem.ForgetAsync("inframonitor", delivery, CancellationToken.None);
+        FileLog($"InfraMonitor FAIL: no se pudo publicar {delivery}: {ex.Message}");
+        return Results.StatusCode(503);
     }
 });
 

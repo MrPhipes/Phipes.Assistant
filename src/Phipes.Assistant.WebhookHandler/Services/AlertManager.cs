@@ -24,6 +24,10 @@ public interface IAlertManager
     // Registra una ocurrencia de la categoria. Si los thresholds se exceden y la
     // suppression list lo permite, dispara una alerta a Teams.
     void Record(AlertCategory category, string? detail = null);
+
+    // Publica un mensaje HTML ya formateado en el chat de alertas (AlertTarget), sin umbrales ni
+    // supresion: lo usan fuentes externas que ya deciden que avisar (InfraMonitor). Lanza si falla.
+    Task PostHtmlAsync(string html, CancellationToken ct);
 }
 
 [SupportedOSPlatform("windows")]
@@ -142,6 +146,30 @@ public sealed class AlertManager : IAlertManager
             throw new InvalidOperationException($"POST chat failed: {(int)resp.StatusCode} {body}");
         }
         FileLogger.Write("Alert", $"SENT category={category} ({count} ocurrencias)");
+    }
+
+    public async Task PostHtmlAsync(string html, CancellationToken ct)
+    {
+        var chatId = await ResolveChatIdAsync()
+            ?? throw new InvalidOperationException("AlertTarget no resoluble");
+
+        using var scope = _scopeFactory.CreateScope();
+        var tokens = scope.ServiceProvider.GetRequiredService<IGraphTokenProvider>();
+        var accessToken = await tokens.GetAccessTokenAsync(ct);
+        var http = _httpFactory.CreateClient("alerts");
+
+        using var req = new HttpRequestMessage(HttpMethod.Post,
+            $"https://graph.microsoft.com/v1.0/chats/{Uri.EscapeDataString(chatId)}/messages")
+        {
+            Content = JsonContent.Create(new { body = new { contentType = "html", content = html } })
+        };
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var resp = await http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException($"POST chat failed: {(int)resp.StatusCode} {body}");
+        }
     }
 
     private async Task<string?> ResolveChatIdAsync()
