@@ -32,7 +32,7 @@ public static class Program
         builder.Services.AddSingleton<OwnerTokenValidator>();
         builder.Services.AddSingleton<InfraReader>();
         builder.Services.AddSingleton<OpsExecutor>();
-        builder.Services.AddSingleton<NasReader>();
+        builder.Services.AddSingleton<NasHealthService>();
         builder.Services.AddWindowsService(o => o.ServiceName = "Phipes.Assistant.OpsBroker");
 
         var listenUrl = builder.Configuration["OpsBroker:ListenUrl"] ?? "http://127.0.0.1:5060";
@@ -85,13 +85,28 @@ public static class Program
             return Results.Json(r, statusCode: r.Success ? 200 : 400);
         });
 
-        // GET /ops/nas-status → estado REAL de las apps Docker del NAS (Vaultwarden, CRM,
-        // WordPress/WooCommerce, Plausible). El broker consulta el NAS con su token interno
-        // y devuelve SOLO nombre+estado — nunca la credencial. Asi Sarah-server responde a
-        // Felipe con dato verificado en vez de inventarlo.
-        app.MapGet("/ops/nas-status", async (NasReader nas, CancellationToken ct) =>
+        // GET /infra/nas → salud del NAS (TrueNAS por JSON-RPC): sistema, actualizaciones, pools,
+        // scrub, apps, snapshots, SMB/iSCSI, SMART, alertas y hallazgos con severidad. El broker
+        // consulta con su token interno y nunca lo devuelve. Lo usan Felipe (preguntas por Teams)
+        // y el NasMonitor del WebhookHandler (avisos proactivos).
+        app.MapGet("/infra/nas", async (NasHealthService nas, CancellationToken ct) =>
         {
-            try { return Results.Json(new { apps = await nas.GetAppsAsync(ct) }); }
+            try { return Results.Json(await nas.GetHealthAsync(ct)); }
+            catch (Exception ex)
+            {
+                FileLogger.Write("Nas", $"health ERROR: {ex.Message}");
+                return Results.Json(new { error = ex.Message }, statusCode: 502);
+            }
+        });
+
+        // GET /ops/nas-status → compatibilidad: solo nombre + estado de las apps del NAS.
+        app.MapGet("/ops/nas-status", async (NasHealthService nas, CancellationToken ct) =>
+        {
+            try
+            {
+                var h = await nas.GetHealthAsync(ct);
+                return Results.Json(new { apps = h.Apps.Select(a => new { name = a.Name, state = a.State }) });
+            }
             catch (Exception ex)
             {
                 FileLogger.Write("Nas", $"status ERROR: {ex.Message}");

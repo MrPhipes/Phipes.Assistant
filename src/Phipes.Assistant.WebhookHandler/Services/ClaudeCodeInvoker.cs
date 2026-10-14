@@ -200,7 +200,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
             if (!string.IsNullOrEmpty(_options.OpsBrokerHmacKey) && !string.IsNullOrEmpty(_options.OpsBrokerUrl))
             {
                 psi.Environment["SARAH_OPS_BROKER_URL"] = _options.OpsBrokerUrl;
-                psi.Environment["SARAH_OPS_TOKEN"] = MintOpsToken(_options.OpsBrokerHmacKey);
+                psi.Environment["SARAH_OPS_TOKEN"] = OpsTokenMinter.Mint(_options.OpsBrokerHmacKey);
             }
         }
         // Inyecta el access token de Microsoft Graph (sconnor delegated) que el
@@ -294,19 +294,6 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
     {
         var hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(master + "-owner"));
         return new Guid(hash).ToString();
-    }
-
-    // Firma un token efimero para el Ops Broker: "{expUnix}.{base64url(HMACSHA256(key, expUnix))}".
-    // El broker recomputa la firma con la misma clave y valida la expiracion. Ventana corta
-    // (~3 min): suficiente para el turno, minimiza replay (loopback only de por si).
-    private static string MintOpsToken(string hmacKey)
-    {
-        var exp = DateTimeOffset.UtcNow.AddSeconds(180).ToUnixTimeSeconds().ToString();
-        var sig = System.Security.Cryptography.HMACSHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(hmacKey),
-            System.Text.Encoding.UTF8.GetBytes(exp));
-        var sig64 = Convert.ToBase64String(sig).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        return $"{exp}.{sig64}";
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";

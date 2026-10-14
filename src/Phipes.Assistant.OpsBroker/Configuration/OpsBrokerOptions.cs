@@ -42,4 +42,21 @@ public sealed class OpsBrokerOptions
     // Vacío = consulta de estado del NAS deshabilitada.
     public string NasBaseUrl { get; set; } = "";
     public string NasApiToken { get; set; } = "";
+
+    // Huella SHA-256 (hex) del certificado HTTPS del NAS. Si el NAS usa un cert self-signed
+    // se fija aqui y solo ese cert se acepta. Vacio = se exige cadena valida (cert de la CA).
+    public string NasCertThumbprint { get; set; } = "";
+
+    // Umbrales del monitoreo del NAS (ver NasHealthEvaluator).
+    public int NasScrubMaxAgeDays { get; set; } = 35;
+    public int NasSnapshotMaxAgeHours { get; set; } = 26;
+    public int NasPoolUsageWarningPercent { get; set; } = 80;
+    public int NasPoolUsageCriticalPercent { get; set; } = 90;
+    public int NasUptimeMaintenanceDays { get; set; } = 90;
+
+    // Initiators iSCSI que deben tener sesion abierta (ej. SRV-CORE con el disco de WSB).
+    public string[] NasExpectedIscsiInitiators { get; set; } = Array.Empty<string>();
+
+    // Apps detenidas a proposito: no generan aviso de "app detenida".
+    public string[] NasIgnoredApps { get; set; } = Array.Empty<string>();
 }
