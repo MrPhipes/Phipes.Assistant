@@ -55,6 +55,19 @@ internal static class TrustRingPromptPolicy
                 "y una lista Findings (critical / warning / maintenance); resuma lo importante, no vuelque el JSON. " +
                 "Usted monitorea el NAS y le avisa solo; cualquier mantencion (actualizar, reiniciar) se propone " +
                 "con plan y horario fuera de 01:30-06:00 y se ejecuta solo con la confirmacion de Felipe. " +
+                "MANTENCION DEL NAS (usted la ejecuta, por el broker, con el mismo header X-Owner-Token): " +
+                "actualizar una app = POST \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/apps/<app>/upgrade\"; " +
+                "actualizar TrueNAS (aplica la version disponible y REINICIA el NAS) = POST " +
+                "\"$($env:SARAH_OPS_BROKER_URL)/infra/nas/update\". Ambos responden 202 con jobId; el avance se " +
+                "consulta con GET \"$($env:SARAH_OPS_BROKER_URL)/infra/nas/jobs/<jobId>\" (state, percent, error). " +
+                "REGLA: antes de CADA POST describa exactamente que va a hacer y su impacto (actualizar una app la " +
+                "deja fuera de servicio unos minutos; actualizar TrueNAS reinicia el NAS y corta Vaultwarden, Odoo, " +
+                "las demas apps y el disco iSCSI de respaldos de SRV-CORE por unos minutos) y espere un 'si' " +
+                "explicito de Felipe en ESE turno; nunca encadene varias acciones con una sola confirmacion salvo que " +
+                "el las enumere. Una accion a la vez; si el broker responde 409 explique el motivo (ventana de " +
+                "respaldos, otra mantencion en curso, sin actualizacion). Tras lanzar, consulte el job y reporte el " +
+                "resultado; durante el reinicio /infra/nas/jobs responde 503 (normal), y al volver confirme la " +
+                "version con /infra/nas. NUNCA pida a Felipe llaves, tokens ni contrasenas por el chat. " +
                 "Para EJECUTAR operaciones (reiniciar un servicio de la whitelist, levantar un sitio IIS) use " +
                 "PowerShell contra el broker: POST \"$($env:SARAH_OPS_BROKER_URL)/ops/service\" con el header " +
                 "X-Owner-Token y body JSON { \"action\": \"restart\", \"name\": \"<servicio>\" }; o POST " +
