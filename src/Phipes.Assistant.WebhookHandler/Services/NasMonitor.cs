@@ -95,7 +95,7 @@ public sealed class NasMonitor : BackgroundService
                 await SendToFelipeAsync(
                     $"🔴 NAS: no logro consultarlo hace {state.ConsecutiveFailures} intentos seguidos. " +
                     $"Si el NAS está caído, también lo están Vaultwarden, Odoo y el disco de respaldos. " +
-                    $"Detalle: {System.Net.WebUtility.HtmlEncode(Truncate(error ?? "sin detalle", 300))}", ct);
+                    $"Detalle: {Utilities.InfraMonitorWebhook.HtmlText(Truncate(error ?? "sin detalle", 300))}", ct);
                 state.UnreachableNotified = true;
             }
             SaveState(state);
@@ -402,7 +402,7 @@ public static class NasFindingsDiff
         return sb.ToString();
     }
 
-    private static string Html(string text) => System.Net.WebUtility.HtmlEncode(text);
+    private static string Html(string text) => Utilities.InfraMonitorWebhook.HtmlText(text);
 
     private static int Rank(string severity) => severity switch
     {
