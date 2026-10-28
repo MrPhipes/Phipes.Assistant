@@ -225,6 +225,7 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
         process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdoutBuilder.AppendLine(e.Data); };
         process.ErrorDataReceived  += (_, e) => { if (e.Data is not null) stderrBuilder.AppendLine(e.Data); };
 
+        var turnStart = DateTimeOffset.UtcNow;
         var sw = Stopwatch.StartNew();
         try
         {
@@ -251,7 +252,24 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
         if (process.ExitCode != 0)
         {
-            FileLog($"CLAUDE EXIT {process.ExitCode} stderr={Truncate(stderr, 500)}");
+            // claude.exe tambien sale con exit 1 cuando el turno supera --max-budget-usd, aunque la
+            // respuesta ya se haya generado: stderr viene vacio y el motivo esta en el JSON de stdout.
+            // Caso vivido el 27-10: los turnos en frio (cache expirada) costaban ~USD 0,50 y Sarah
+            // no respondia. Si fue solo eso y hay respuesta, se entrega igual y queda la alerta.
+            var failed = TryParseResult(stdout);
+            if (failed?.Subtype == "error_max_budget_usd")
+            {
+                var rescued = !string.IsNullOrWhiteSpace(failed.Result) ? failed.Result : ReadLastAssistantText(sessionId, turnStart);
+                FileLog($"BUDGET EXCEEDED chat={chatId} session={sessionId} cost=${failed.TotalCostUsd:0.0000} budget=${_options.MaxBudgetUsd:0.00} rescuedLen={rescued.Length}");
+                _alerts.Record(AlertCategory.ClaudeApiErrors, $"chat={chatId} presupuesto excedido cost=${failed.TotalCostUsd:0.00} budget=${_options.MaxBudgetUsd:0.00}");
+                if (!string.IsNullOrWhiteSpace(rescued))
+                {
+                    try { File.WriteAllText(flagFile, DateTime.UtcNow.ToString("o")); } catch { }
+                    return rescued.Trim();
+                }
+            }
+
+            FileLog($"CLAUDE EXIT {process.ExitCode} subtype={failed?.Subtype} stderr={Truncate(stderr, 500)} stdout={Truncate(stdout, 500)}");
             throw new InvalidOperationException($"claude.exe exit {process.ExitCode}: {Truncate(stderr, 500)}");
         }
 
@@ -298,18 +316,48 @@ public sealed class ClaudeCodeInvoker : IClaudeCodeInvoker
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";
 
-    // Busca el .jsonl de la sesion en {ClaudeHome}/.claude/projects/**/{sessionId}.jsonl.
-    // Si supera BloatThresholdMb, lo mueve a _archived-sessions/ con timestamp y borra
-    // el .touch asociado. Proximo turn arrancara como NEW con sesion fresca y rapida.
-    // Falla silenciosa: si no puede rotar (permisos, archivo lockeado), log y sigue.
-    private void RotateIfBloated(string sessionId, string flagFile)
+    private static ClaudeResult? TryParseResult(string stdout)
+    {
+        try { return JsonSerializer.Deserialize<ClaudeResult>(stdout); }
+        catch (JsonException) { return null; }
+    }
+
+    // Texto del asistente escrito en la sesion desde el inicio del turno. Vacio si no se puede leer.
+    private string ReadLastAssistantText(string sessionId, DateTimeOffset since)
+    {
+        try
+        {
+            var jsonlPath = FindSessionJsonl(sessionId);
+            if (jsonlPath is null) return string.Empty;
+            using var stream = new FileStream(jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var lines = new List<string>();
+            while (reader.ReadLine() is { } line) lines.Add(line);
+            return ClaudeTranscript.LastAssistantText(lines, since);
+        }
+        catch (Exception ex)
+        {
+            FileLog($"RESCUE FAIL session={sessionId}: {ex.Message}");
+            return string.Empty;
+        }
+    }
+
+    // {ClaudeHome}/.claude/projects/**/{sessionId}.jsonl, o null si no existe.
+    private string? FindSessionJsonl(string sessionId)
     {
         var projectsRoot = Path.Combine(_options.ClaudeHome, ".claude", "projects");
-        if (!Directory.Exists(projectsRoot)) return;
-
-        var jsonlPath = Directory
+        if (!Directory.Exists(projectsRoot)) return null;
+        return Directory
             .EnumerateFiles(projectsRoot, $"{sessionId}.jsonl", SearchOption.AllDirectories)
             .FirstOrDefault();
+    }
+
+    // Si el .jsonl de la sesion supera BloatThresholdMb, lo mueve a _archived-sessions/ con
+    // timestamp y borra el .touch asociado. Proximo turn arrancara como NEW con sesion fresca
+    // y rapida. Falla silenciosa: si no puede rotar (permisos, archivo lockeado), log y sigue.
+    private void RotateIfBloated(string sessionId, string flagFile)
+    {
+        var jsonlPath = FindSessionJsonl(sessionId);
         if (jsonlPath is null) return;
 
         var sizeBytes = new FileInfo(jsonlPath).Length;
