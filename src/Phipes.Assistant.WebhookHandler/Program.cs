@@ -197,6 +197,8 @@ builder.Services.AddHostedService<WaProactiveNotifier>();
 // vigila PacificDevMeta.dbo.WebhookEvents y avisa a Felipe por Teams con el menu de
 // acciones; la ejecucion de la instruccion la hace la skill /meta-comentario de Sarah.
 builder.Services.AddHttpClient("metanotifier", c => c.Timeout = TimeSpan.FromSeconds(15));
+// Borradores de respuesta a mensajes directos: claude.exe aislado, sin herramientas ni MCP.
+builder.Services.AddSingleton<IMetaReplyDrafter, MetaReplyDrafter>();
 builder.Services.AddHostedService<MetaProactiveNotifier>();
 
 // NasMonitor: pide la salud del NAS al Ops Broker cada IntervalMinutes y avisa a Felipe por
